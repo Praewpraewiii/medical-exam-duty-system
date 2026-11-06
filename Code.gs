@@ -481,7 +481,7 @@ function levelOf_(rank) {
 }
 function isAdmin_(rank) { return levelOf_(rank) >= 1 || isSuper_(rank); }
 function isSuper_(rank) {
-  const alias = String(rank == null ? '' : rank).trim().toUpperCase().replace(/[\\s.]/g, '');
+  const alias = String(rank == null ? '' : rank).trim().toUpperCase().replace(/[\s.]/g, '');
   return levelOf_(rank) >= 2 || alias === 'DEV' || alias === 'DEVELOPER';
 }
 
