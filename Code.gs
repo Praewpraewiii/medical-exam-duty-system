@@ -1444,7 +1444,7 @@ function count_(v, all) { return String(v == null ? '' : v).trim() === '' ? all 
 /** กันข้อความที่ผู้ใช้พิมพ์ถูกตีความเป็นสูตรในชีต */
 function safe_(s) { s = String(s == null ? '' : s); return /^[=+\-@]/.test(s) ? "'" + s : s; }
 
-function discordKey_(s) { return String(s).trim().toLowerCase().replace(/^https?:\/\/(www\.|ptb\.|canary\.)?/, '').replace(/\/+$/, ''); }
+function discordKey_(s) { return discordUserId_(s) || String(s).trim().toLowerCase().replace(/^https?:\/\/(www\.|ptb\.|canary\.)?/, '').replace(/\/+$/, ''); }
 
 /** ไฟล์ Google Sheet หลังบ้าน */
 function ss_() {
