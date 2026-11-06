@@ -693,6 +693,14 @@ const WEBHOOK_RULE = /^https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/w
 function discordWebhook_() { return PropertiesService.getScriptProperties().getProperty('DISCORD_WEBHOOK') || ''; }
 function sendDiscord_(exam) { return !!exam && truthy_(exam.SendDiscord); }
 
+/**
+ * Run once from the Apps Script editor to authorize UrlFetchApp for Discord webhooks.
+ * This harmless request sends no application or user data.
+ */
+function authorizeUrlFetch() {
+  return UrlFetchApp.fetch('https://www.google.com/generate_204', { muteHttpExceptions: true }).getResponseCode();
+}
+
 /** ดึง Discord user ID จากลิงก์โปรไฟล์ หรือเลข ID ตรงๆ */
 function discordUserId_(v) {
   v = str_(v).trim();
