@@ -186,8 +186,8 @@
         </div>
         <label for="r-age">อายุ IC</label>
         <input type="number" id="r-age" min="1" max="150" step="1" inputmode="numeric" required>
-        <label for="r-discord">ลิงก์ Discord <span class="hint">— เช่น https://discord.com/users/123456789</span></label>
-        <input type="url" id="r-discord" maxlength="200" placeholder="https://discord.com/users/..." required>
+        <label for="r-discord">Discord UID <span class="hint">— กรอกเลข UID 15–22 หลัก</span></label>
+        <input type="text" id="r-discord" maxlength="22" inputmode="numeric" pattern="[0-9]{15,22}" placeholder="123456789012345678" autocomplete="off" required>
         <label for="r-reason">ทำไมถึงอยากมาสมัครแพทย์</label>
         <textarea id="r-reason" maxlength="1000" minlength="10" required></textarea>
         <div class="counter"><span id="r-reason-n">0</span>/1000</div>
