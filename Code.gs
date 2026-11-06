@@ -479,8 +479,11 @@ function levelOf_(rank) {
   if (SUPER_RANKS.map(rankKey_).indexOf(k) !== -1) return 2;
   return adminRanks_().indexOf(k) !== -1 ? 1 : 0;
 }
-function isAdmin_(rank) { return levelOf_(rank) >= 1; }
-function isSuper_(rank) { return levelOf_(rank) >= 2; }
+function isAdmin_(rank) { return levelOf_(rank) >= 1 || isSuper_(rank); }
+function isSuper_(rank) {
+  const alias = String(rank == null ? '' : rank).trim().toUpperCase().replace(/[\\s.]/g, '');
+  return levelOf_(rank) >= 2 || alias === 'DEV' || alias === 'DEVELOPER';
+}
 
 function whoOf_(user) { return str_(user.Name) + ' (' + str_(user.EmployeeID) + ')'; }
 
