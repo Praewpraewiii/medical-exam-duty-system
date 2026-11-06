@@ -335,14 +335,14 @@
   <!-- ผลสอบ -->
   <section class="view" id="view-result" hidden>
     <div class="card center">
-      <p class="sub" id="r-exam" style="margin:0"></p>
       <div class="big" id="r-score"></div>
-      <p id="r-pct" style="margin:0 0 10px;color:var(--muted)"></p>
-      <h2 id="r-verdict"></h2>
-      <p id="r-note" class="sub"></p>
+      <p class="sub" id="r-exam" hidden></p>
+      <p id="r-pct" hidden></p>
+      <h2 id="r-verdict" hidden></h2>
+      <p id="r-note" class="sub" hidden></p>
       <p id="r-live" hidden><span class="live">ระบบจะแสดงผลทันทีเมื่อผู้บริหารตรวจ/ยืนยันคะแนน</span></p>
-      <div id="r-code"></div>
-      <button class="btn" id="b-back" onclick="backHome()">กลับหน้าหลัก</button>
+      <div id="r-code" hidden></div>
+      <button class="btn" id="b-back" onclick="backHome()" hidden>กลับหน้าหลัก</button>
     </div>
   </section>
   <!-- ผู้บริหาร: คลังข้อสอบ -->
@@ -1025,7 +1025,7 @@ function renderResult(r, changed){
     : r.note && r.note.indexOf('เลื่อนยศ') === 0 ? 'ยินดีด้วย! ' + r.note
     : r.result === 'ผ่าน' ? 'ผลสอบถูกบันทึกแล้ว รอผู้บริหารอนุมัติการเลื่อนยศ'
     : 'ผลสอบถูกบันทึกแล้ว สามารถทบทวนและสอบใหม่ได้';
-  $('r-live').hidden = !waiting;
+  $('r-live').hidden = true;
 }
 
 function startResultWatch(){
