@@ -570,8 +570,8 @@
         <label for="ue-rank">ยศ <span class="hint">— เลือกจากรายการหรือพิมพ์ยศใหม่</span></label>
         <input type="text" id="ue-rank" list="rank-list" maxlength="40" required>
         <p class="hint" id="ue-level" style="margin:6px 0 0"></p>
-        <label for="ue-discord">Discord <span class="hint">— ลิงก์โปรไฟล์หรือ User ID (ไว้แท็กชื่อตอนประกาศผล ไม่บังคับ)</span></label>
-        <input type="text" id="ue-discord" maxlength="200" placeholder="https://discord.com/users/123456789012345678">
+        <label for="ue-discord">Discord User ID <span class="hint">— กรอกเลข UID 15–22 หลัก (ไม่บังคับ)</span></label>
+        <input type="text" id="ue-discord" maxlength="22" inputmode="numeric" pattern="[0-9]{15,22}" placeholder="123456789012345678" autocomplete="off">
         <div id="ue-extra"></div>
         <div class="row" style="margin-top:16px">
           <button type="button" class="btn ghost" onclick="showUsers()">ยกเลิก</button>
@@ -1387,6 +1387,7 @@ function renderUsers(){
     '<div class="card"><div style="font-weight:700">' + esc(u.name) + ' <span class="hint">' + esc(u.id) + '</span>' +
       (u.id.toUpperCase() === SUP.data.me.toUpperCase() ? ' <span class="hint">(คุณ)</span>' : '') + '</div>' +
     '<div><span class="rank">' + esc(u.rank || '—') + '</span>' + lvBadge(u.level) + '</div>' +
+    (u.discord ? '<div class="hint" style="margin-top:4px">Discord UID: ' + esc(discordUid(u.discord)) + '</div>' : '') +
     '<div class="hint" style="margin-top:4px">' + (u.mustChange ? (u.hasPassword ? 'ต้องเปลี่ยนรหัสผ่าน' : 'รอเปลี่ยนรหัสตั้งต้น') : 'ตั้งรหัสผ่านแล้ว') +
       (u.createdAt ? ' · สร้างเมื่อ ' + esc(u.createdAt) : '') + '</div>' +
     '<div class="acts"><button class="btn ghost sm" data-uedit="' + esc(u.id) + '">แก้ไข</button>' +
@@ -1448,13 +1449,19 @@ function openUEdit(id){
   $('ue-id').value = u ? u.id : ''; $('ue-id').readOnly = !!u;
   $('ue-name').value = u ? u.name : '';
   $('ue-rank').value = u ? u.rank : '';
-  $('ue-discord').value = u ? u.discord : '';
+  $('ue-discord').value = u ? discordUid(u.discord) : '';
   $('ue-extra').innerHTML = u && (u.nameOC || u.age) ? '<dl class="meta" style="margin-top:14px">' +
     (u.nameOC ? '<dt>ชื่อ OC</dt><dd>' + esc(u.nameOC) + '</dd>' : '') +
     (u.age ? '<dt>อายุ IC</dt><dd>' + esc(u.age) + '</dd>' : '') +
     '</dl>' : '';
   $('ue-rank').dispatchEvent(new Event('input'));
   msg('m-uedit',''); show('uedit'); (u ? $('ue-rank') : $('ue-id')).focus();
+}
+
+function discordUid(value){
+  const s = String(value || '').trim();
+  const m = /discord(?:app)?\.com\/users\/(\d{15,22})/i.exec(s) || /^(\d{15,22})$/.exec(s);
+  return m ? m[1] : s;
 }
 
 $('f-uedit').addEventListener('submit', async e => {
