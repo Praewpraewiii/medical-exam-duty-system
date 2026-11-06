@@ -1858,4 +1858,3 @@ function adminSavePayroll(token, config, rates) {
     return { ok:true };
   } finally { lock.releaseLock(); }
 }
-
