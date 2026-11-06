@@ -38,7 +38,7 @@ const ADMIN_RANKS = [];   // ไม่มียศ ADMIN เริ่มต้�
 const DEFAULT_TIME_MIN = 60;    // เวลาสอบเมื่อไม่ได้ตั้งในชีต Exams (นาที)
 
 const PW_RULE = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!-\/:-@\[-`{-~])[!-~]{6,10}$/;
-const DISCORD_RULE = /^https?:\/\/(www\.|ptb\.|canary\.)?(discord(app)?\.com|discord\.gg)\/\S+$/i;
+const DISCORD_UID_RULE = /^\d{15,22}$/;
 
 /* ---------- หน้าเว็บ + เมนูในชีต ---------- */
 
@@ -135,14 +135,13 @@ function register(f) {
   const nameOC = String(f.nameOC || '').trim();
   const ageIC = Number(String(f.ageIC || '').trim());
   const discord = String(f.discord || '').trim();
+  const discordUid = discordUserId_(discord);
   const reason = String(f.reason || '').trim();
 
   if (nameIC.length < 2 || nameIC.length > 60) return { ok: false, message: 'กรุณากรอกชื่อ IC (2–60 ตัวอักษร)' };
   if (nameOC.length < 2 || nameOC.length > 60) return { ok: false, message: 'กรุณากรอกชื่อ OC (2–60 ตัวอักษร)' };
   if (!Number.isInteger(ageIC) || ageIC < 1 || ageIC > 150) return { ok: false, message: 'กรุณากรอกอายุ IC เป็นตัวเลข' };
-  if (!DISCORD_RULE.test(discord) || discord.length > 200) {
-    return { ok: false, message: 'ลิงก์ Discord ไม่ถูกต้อง (เช่น https://discord.com/users/123456789)' };
-  }
+  if (!DISCORD_UID_RULE.test(discordUid)) return { ok: false, message: 'Discord UID ต้องเป็นตัวเลข 15–22 หลัก' };
   if (reason.length < 10 || reason.length > 1000) return { ok: false, message: 'กรุณาบอกเหตุผลที่อยากสมัครแพทย์ (10–1000 ตัวอักษร)' };
   const initialPassword = initialPassword_();
   if (!initialPassword) return { ok:false, message:'ระบบยังไม่ได้ตั้งรหัสเริ่มต้น กรุณาติดต่อผู้ดูแลระบบ' };
@@ -151,9 +150,8 @@ function register(f) {
   lock.waitLock(10000);
   try {
     const t = table_(SH.USERS);
-    const key = discordKey_(discord);
-    if (t.rows.some(r => r.Discord && discordKey_(r.Discord) === key)) {
-      return { ok: false, message: 'ลิงก์ Discord นี้เคยสมัครแล้ว กรุณาเข้าสู่ระบบด้วยรหัสเดิม' };
+    if (t.rows.some(r => r.Discord && discordUserId_(r.Discord) === discordUid)) {
+      return { ok: false, message: 'Discord UID นี้เคยสมัครแล้ว กรุณาเข้าสู่ระบบด้วยรหัสเดิม' };
     }
 
     const used = new Set(t.rows.map(r => norm_(r.EmployeeID)));
@@ -162,7 +160,7 @@ function register(f) {
 
     appendObj_(t, {
       EmployeeID: code, Name: safe_(nameIC), NameOC: safe_(nameOC), AgeIC: ageIC,
-      Discord: safe_(discord), Reason: safe_(reason), Rank: APPLICANT_RANK,
+      Discord: discordUid, Reason: safe_(reason), Rank: APPLICANT_RANK,
       CreatedAt: new Date(), PasswordHash: '', MustChange: true
     });
     return { ok: true, code: code, defaultPassword: initialPassword, token: issueToken_(code, 'reg') };
@@ -1858,3 +1856,4 @@ function adminSavePayroll(token, config, rates) {
     return { ok:true };
   } finally { lock.releaseLock(); }
 }
+
