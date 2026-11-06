@@ -1142,9 +1142,10 @@ function superSaveUser(token, u) {
   if (!rank || rank.length > 40) return { ok: false, message: 'กรุณากรอกยศ' };
   const discordIn = String(u.discord || '').trim();
   if (discordIn && !discordUserId_(discordIn)) {
-    return { ok: false, message: 'Discord ต้องเป็นลิงก์โปรไฟล์ (https://discord.com/users/...) หรือเลข User ID' };
+    return { ok: false, message: 'Discord User ID ต้องเป็นตัวเลข 15–22 หลัก' };
   }
-  const discordVal = discordIn ? 'https://discord.com/users/' + discordUserId_(discordIn) : '';
+  // เก็บ UID เป็นเลขตรง ๆ; discordUserId_ ยังรองรับ URL เดิมในชีตได้
+  const discordVal = discordIn ? discordUserId_(discordIn) : '';
 
   const me = norm_(sup.user.EmployeeID);
   const lock = LockService.getScriptLock();
@@ -1159,11 +1160,15 @@ function superSaveUser(token, u) {
     } else {
       if (!row) return { ok: false, message: 'ไม่พบผู้ใช้ ' + id };
       if (norm_(id) === me && !isSuper_(rank)) return { ok: false, message: 'ไม่สามารถลดสิทธิ์ของตัวเองได้ (กันล็อกตัวเองออกจากระบบ)' };
-      const old = str_(row.Rank);
+      const old = { name: str_(row.Name), rank: str_(row.Rank), discord: discordUserId_(row.Discord) };
       setCell_(t, row, 'Name', safe_(name));
       setCell_(t, row, 'Rank', rank);
       if (u.discord !== undefined) setCell_(t, row, 'Discord', discordVal);
-      audit_(whoOf_(sup.user), 'แก้ไขผู้ใช้', id, old === rank ? 'ชื่อ: ' + name : 'ยศ: ' + old + ' → ' + rank);
+      const changes = [];
+      if (old.name !== name) changes.push('ชื่อ: ' + old.name + ' → ' + name);
+      if (old.rank !== rank) changes.push('ยศ: ' + old.rank + ' → ' + rank);
+      if (u.discord !== undefined && old.discord !== discordVal) changes.push('Discord UID เปลี่ยน');
+      audit_(whoOf_(sup.user), 'แก้ไขผู้ใช้', id, changes.join(' · ') || 'บันทึกโดยไม่มีการเปลี่ยนค่า');
     }
     return { ok: true, defaultPassword: u.isNew ? initialPassword_() : '' };
   } finally {
