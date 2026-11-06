@@ -753,7 +753,7 @@ $('f-reg').addEventListener('submit', async e => {
     $('f-reg').reset(); $('r-reason-n').textContent = '0';
     b.textContent = 'กำลังสุ่มข้อสอบ…';
     const ok = await beginExam();
-    if (!ok) msg('m-reg', 'สมัครสำเร็จ (รหัส ' + r.code + ') แต่เปิดข้อสอบไม่ได้ — เข้าสู่ระบบด้วยรหัสนี้และรหัสตั้งต้นที่แสดงไว้ตอนสมัคร');
+    if (!ok) msg('m-reg', 'สมัครสำเร็จ (รหัส ' + r.code + ') แต่เปิดข้อสอบไม่ได้ — กรุณาติดต่อผู้ดูแลระบบ');
   } catch(err){ msg('m-reg', err.message || err); }
   finally { busy(b, false); }
 });
