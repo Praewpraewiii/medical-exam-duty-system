@@ -143,9 +143,6 @@ function register(f) {
   if (!Number.isInteger(ageIC) || ageIC < 1 || ageIC > 150) return { ok: false, message: 'กรุณากรอกอายุ IC เป็นตัวเลข' };
   if (!DISCORD_UID_RULE.test(discordUid)) return { ok: false, message: 'Discord UID ต้องเป็นตัวเลข 15–22 หลัก' };
   if (reason.length < 10 || reason.length > 1000) return { ok: false, message: 'กรุณาบอกเหตุผลที่อยากสมัครแพทย์ (10–1000 ตัวอักษร)' };
-  const initialPassword = initialPassword_();
-  if (!initialPassword) return { ok:false, message:'ระบบยังไม่ได้ตั้งรหัสเริ่มต้น กรุณาติดต่อผู้ดูแลระบบ' };
-
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
@@ -163,7 +160,7 @@ function register(f) {
       Discord: discordUid, Reason: safe_(reason), Rank: APPLICANT_RANK,
       CreatedAt: new Date(), PasswordHash: '', MustChange: true
     });
-    return { ok: true, code: code, defaultPassword: initialPassword, token: issueToken_(code, 'reg') };
+    return { ok: true, code: code, token: issueToken_(code, 'reg') };
   } finally {
     lock.releaseLock();
   }
