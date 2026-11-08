@@ -19,7 +19,7 @@
  *   ทุกการกระทำของผู้บริหารและผู้พัฒนาจะถูกบันทึกในชีต AuditLog
  *
  * รหัสผ่าน:
- *   - PasswordHash ว่าง = ใช้รหัสใน Script Property INITIAL_PASSWORD และต้องเปลี่ยนตอนเข้าสู่ระบบ
+ *   - ผู้ใช้ใหม่/ผู้ใช้ที่รีเซ็ตรหัสผ่านใช้รหัสตั้งต้น 1234 และต้องเปลี่ยนตอนเข้าสู่ระบบ
  *   - รีเซ็ตรหัสผ่าน: ลบค่าในช่อง PasswordHash / บังคับเปลี่ยน: MustChange = TRUE
  */
 
@@ -32,6 +32,7 @@ const REVIEW_DONE = 'ยืนยันแล้ว';
 const SESSION_SECONDS = 21600;
 const MAX_FAILS = 5;
 const LOCK_SECONDS = 300;
+const DEFAULT_INITIAL_PASSWORD = '1234';
 const MAX_ANSWER_CHARS = 3000;
 const SUPER_RANKS = ['ผู้พัฒนา'];                   // Super Admin (กำหนดในโค้ด กันล็อกตัวเองออก)
 const ADMIN_RANKS = [];   // ไม่มียศ ADMIN เริ่มต้น — DEV001 เป็นคนให้สิทธิ์เองในหน้าเว็บ
@@ -81,7 +82,7 @@ function login(code, password) {
 }
 
 function initialPassword_() {
-  return PropertiesService.getScriptProperties().getProperty('INITIAL_PASSWORD') || '';
+  return DEFAULT_INITIAL_PASSWORD;
 }
 
 function changePassword(token, newPassword, currentPassword) {
@@ -1139,7 +1140,6 @@ function superSaveUser(token, u) {
   const sup = requireSuper_(token);
   if (sup.err) return sup.err;
   u = u || {};
-  if (u.isNew && !initialPassword_()) return { ok:false, message:'ยังไม่ได้ตั้ง Script Property INITIAL_PASSWORD ใน Apps Script' };
   const id = String(u.id || '').trim();
   const name = String(u.name || '').trim();
   const rank = String(u.rank || '').trim();
@@ -1182,13 +1182,12 @@ function superSaveUser(token, u) {
   }
 }
 
-/** รีเซ็ตรหัสผ่านไปเป็นรหัสตั้งต้นใน Script Properties และบังคับเปลี่ยนตอนเข้าสู่ระบบ */
+/** รีเซ็ตรหัสผ่านเป็น 1234 และบังคับเปลี่ยนตอนเข้าสู่ระบบ */
 function superResetPassword(token, id) {
   const sup = requireSuper_(token);
   if (sup.err) return sup.err;
   if (norm_(id) === norm_(sup.user.EmployeeID)) return { ok: false, message: 'เปลี่ยนรหัสของตัวเองที่ปุ่ม "เปลี่ยนรหัสผ่าน" ในหน้าหลัก' };
   const initialPassword = initialPassword_();
-  if (!initialPassword) return { ok:false, message:'ยังไม่ได้ตั้ง Script Property INITIAL_PASSWORD ใน Apps Script' };
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
@@ -1349,8 +1348,10 @@ function validatePassword_(pw) {
 }
 
 function checkPassword_(user, pw) {
+  // ผู้ใช้ที่ถูกบังคับตั้งรหัสใหม่ให้ใช้รหัสเริ่มต้น แม้ยังมี hash เก่าค้างอยู่
+  if (mustChange_(user)) return String(pw) === initialPassword_();
   const h = String(user.PasswordHash || '').trim();
-  if (!h) { const initialPassword = initialPassword_(); return !!initialPassword && String(pw) === initialPassword; }
+  if (!h) return String(pw) === initialPassword_();
   return h === hash_(user.EmployeeID, pw);
 }
 
@@ -1554,7 +1555,6 @@ const SAMPLE_WRITTEN = [
 function setup() {
   AUTO_SETUP_DONE_ = true;
   const ss = ss_();
-  if (!initialPassword_()) throw new Error('ก่อนติดตั้ง ให้ตั้ง Script Property ชื่อ INITIAL_PASSWORD เป็นรหัสผ่านตั้งต้นที่คาดเดายาก');
   PropertiesService.getScriptProperties().setProperty('SHEET_ID', ss.getId());
   const make = (name, headers, rows) => {
     let sh = ss.getSheetByName(name);
