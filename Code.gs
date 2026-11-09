@@ -3,7 +3,8 @@
  * Backend: Google Apps Script + Google Sheets
  *
  * ชีตที่ใช้ (สร้างอัตโนมัติด้วยฟังก์ชัน setup):
- *   Users     : ผู้ใช้ + ข้อมูลใบสมัคร + ยศ + รหัสผ่าน (hash)
+ *   Users      : บุคลากร (ผู้ใช้ที่เข้าสู่ระบบได้) + ยศ + รหัสผ่านครั้งเดียว (hash)
+ *   Applicants : ผู้สมัครแพทย์ (แยกจาก Users) — ADMIN กด "รับเข้าเป็นบุคลากร" เพื่อย้ายไป Users
  *   Exams     : ตั้งค่าข้อสอบแต่ละยศ (จำนวนข้อช้อย/ข้อเขียน, % ผ่าน, เวลา, ยศถัดไป)
  *   Questions : คลังข้อสอบ  Type = CHOICE (ช้อย) หรือ WRITTEN (เขียน), Points = คะแนนต่อข้อ
  *   Results   : ผลสอบรวม
@@ -12,33 +13,40 @@
  *               แล้วกดเมนู "ระบบสอบ → คำนวณผลข้อเขียนที่ตรวจแล้ว")
  *
  * ระดับสิทธิ์:
- *   SUPER (ผู้พัฒนา)  : ทำได้ทุกอย่าง + จัดการผู้ใช้ / สิทธิ์ / ชุดข้อสอบ ผ่านหน้าเว็บ
- *   ADMIN             : ยศที่ผู้พัฒนาให้สิทธิ์ไว้ในหน้า "จัดการสิทธิ์" (ชีต Permissions)
- *                       เพิ่ม/แก้ข้อสอบ และตรวจข้อเขียน
+ *   SUPER (ผู้พัฒนา)  : ทำได้ทุกอย่าง รวมถึงตั้งค่า Discord Webhook และจัดการบัญชีผู้พัฒนา
+ *   ADMIN             : ยศที่ได้สิทธิ์ในหน้า "จัดการสิทธิ์" (ชีต Permissions)
+ *                       จัดการข้อสอบ ตรวจข้อเขียน จัดการผู้ใช้ จัดการสิทธิ์ ตั้งค่าชุดข้อสอบ
+ *                       และสร้างรหัสผ่านครั้งเดียวให้ผู้ใช้ (ยกเว้นบัญชีผู้พัฒนา)
  *   ผู้ใช้ทั่วไป       : ทำข้อสอบตามยศ
  *   ทุกการกระทำของผู้บริหารและผู้พัฒนาจะถูกบันทึกในชีต AuditLog
  *
- * รหัสผ่าน:
- *   - ผู้ใช้ใหม่/ผู้ใช้ที่รีเซ็ตรหัสผ่านใช้รหัสตั้งต้น 1234 และต้องเปลี่ยนตอนเข้าสู่ระบบ
- *   - รีเซ็ตรหัสผ่าน: ลบค่าในช่อง PasswordHash / บังคับเปลี่ยน: MustChange = TRUE
+ * รหัสผ่าน (ไม่มีการตั้งรหัสผ่านเอง):
+ *   - ADMIN / SUPER กด "สร้างรหัสผ่านครั้งเดียว" ให้ผู้ใช้ในหน้า "จัดการผู้ใช้"
+ *   - รหัสใช้เข้าสู่ระบบได้ 1 ครั้ง และหมดอายุตามเวลาที่เลือก (เก็บแบบ hash ในชีต Users)
+ *   - ผู้พัฒนาคนแรก (DEV001): เปิดไฟล์ Google Sheet → เมนู "ระบบสอบ" → "สร้างรหัสผ่านครั้งเดียวให้ DEV001"
  */
 
 const SH = { USERS: 'Users', EXAMS: 'Exams', QUESTIONS: 'Questions', RESULTS: 'Results', ANSWERS: 'Answers',
-             PERMS: 'Permissions', AUDIT: 'AuditLog', ATTENDANCE: 'Attendance', PAYCFG: 'PayrollConfig', PAYRATES: 'PayrollRates' };
-const APPLICANT_RANK = 'ผู้สมัคร';
+             PERMS: 'Permissions', AUDIT: 'AuditLog', APPLICANTS: 'Applicants' };
+const APPLICANT_RANK = 'ผู้สมัคร';   // ยศที่ใช้เลือกชุดข้อสอบของผู้สมัคร (ผู้สมัครไม่อยู่ในชีต Users)
+const APP_HEADERS = ['ApplicantID', 'Name', 'NameOC', 'AgeIC', 'Discord', 'Reason', 'CreatedAt',
+                     'Status', 'LastResult', 'LastExamAt', 'AcceptedAs', 'AcceptedBy', 'AcceptedAt'];
+const APP_STATUS = { NEW: 'สมัครแล้ว', WAIT: 'สอบแล้ว — รอตรวจ', PASS: 'สอบผ่าน — รอรับเข้า', FAIL: 'ไม่ผ่าน', DONE: 'รับเข้าแล้ว' };
 const PENDING = 'รอตรวจข้อเขียน';
 const REVIEW_AUTO = 'อัตโนมัติ (รอยืนยัน)';
 const REVIEW_DONE = 'ยืนยันแล้ว';
 const SESSION_SECONDS = 21600;
 const MAX_FAILS = 5;
 const LOCK_SECONDS = 300;
-const DEFAULT_INITIAL_PASSWORD = '1234';
 const MAX_ANSWER_CHARS = 3000;
 const SUPER_RANKS = ['ผู้พัฒนา'];                   // Super Admin (กำหนดในโค้ด กันล็อกตัวเองออก)
 const ADMIN_RANKS = [];   // ไม่มียศ ADMIN เริ่มต้น — DEV001 เป็นคนให้สิทธิ์เองในหน้าเว็บ
 const DEFAULT_TIME_MIN = 60;    // เวลาสอบเมื่อไม่ได้ตั้งในชีต Exams (นาที)
 
-const PW_RULE = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!-\/:-@\[-`{-~])[!-~]{6,10}$/;
+const OTP_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // ตัด 0/O/1/I ออก กันอ่านสลับ
+const OTP_LENGTH = 8;
+const OTP_HOURS = [1, 6, 12, 24, 48, 72];                      // อายุรหัสที่เลือกได้ (ชั่วโมง)
+const DEFAULT_OTP_HOURS = 24;
 const DISCORD_UID_RULE = /^\d{15,22}$/;
 
 /* ---------- หน้าเว็บ + เมนูในชีต ---------- */
@@ -52,6 +60,7 @@ function doGet() {
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('ระบบสอบ')
     .addItem('คำนวณผลข้อเขียนที่ตรวจแล้ว', 'gradeWritten')
+    .addItem('สร้างรหัสผ่านครั้งเดียวให้ DEV001', 'createDevOtp')
     .addToUi();
 }
 
@@ -68,52 +77,30 @@ function login(code, password) {
     return { ok: false, message: 'กรอกรหัสผ่านผิดเกิน ' + MAX_FAILS + ' ครั้ง กรุณารอ 5 นาทีแล้วลองใหม่' };
   }
 
-  const user = findUser_(c);
-  if (!user || !checkPassword_(user, password)) {
-    cache.put('fail_' + c, String(fails + 1), LOCK_SECONDS);
-    return { ok: false, message: 'รหัสพนักงานหรือรหัสผ่านไม่ถูกต้อง' };
-  }
-  cache.remove('fail_' + c);
-
-  if (mustChange_(user)) {
-    return { ok: true, mustChange: true, token: issueToken_(c, 'change'), name: String(user.Name) };
-  }
-  return Object.assign({ ok: true, token: issueToken_(c, 'auth') }, homeData_(user));
-}
-
-function initialPassword_() {
-  return DEFAULT_INITIAL_PASSWORD;
-}
-
-function changePassword(token, newPassword, currentPassword) {
-  const tok = readToken_(token);
-  if (!tok) return { ok: false, expired: true, message: 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่' };
-
+  // ล็อกระหว่างตรวจและล้างรหัส กันการใช้รหัสเดียวกันเข้าพร้อมกัน 2 ที่
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
+  let user;
   try {
     const users = table_(SH.USERS);
-    const user = users.rows.find(r => norm_(r.EmployeeID) === tok.code);
-    if (!user) return { ok: false, expired: true, message: 'ไม่พบผู้ใช้' };
-
-    if (tok.type === 'auth' && !checkPassword_(user, currentPassword)) {
-      return { ok: false, message: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' };
+    user = users.rows.find(r => norm_(r.EmployeeID) === c);
+    const otp = user ? checkOtp_(user, password) : 'bad';
+    if (otp !== 'ok') {
+      cache.put('fail_' + c, String(fails + 1), LOCK_SECONDS);
+      return { ok: false, message: otp === 'expired'
+        ? 'รหัสผ่านครั้งเดียวนี้หมดอายุแล้ว — ขอรหัสใหม่จากผู้ดูแล'
+        : 'รหัสพนักงานหรือรหัสผ่านไม่ถูกต้อง (รหัสผ่านใช้ได้ครั้งเดียว ถ้าเคยใช้แล้วให้ขอรหัสใหม่จากผู้ดูแล)' };
     }
-    const err = validatePassword_(newPassword);
-    if (err) return { ok: false, message: err };
-    if (checkPassword_(user, newPassword)) return { ok: false, message: 'รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสผ่านเดิม' };
-
-    const hash = hash_(user.EmployeeID, newPassword);
-    setCell_(users, user, 'PasswordHash', hash);
-    setCell_(users, user, 'MustChange', false);
-    user.PasswordHash = hash;
-    user.MustChange = false;
-
-    CacheService.getScriptCache().remove('tok_' + token);
-    return Object.assign({ ok: true, token: issueToken_(tok.code, 'auth') }, homeData_(user));
+    cache.remove('fail_' + c);
+    // ใช้ได้ครั้งเดียว: ล้างรหัสทันทีที่เข้าสู่ระบบสำเร็จ
+    setCell_(users, user, 'OtpHash', '');
+    setCell_(users, user, 'OtpExpires', '');
+    setCell_(users, user, 'LastLoginAt', new Date());
   } finally {
     lock.releaseLock();
   }
+  audit_(whoOf_(user), 'เข้าสู่ระบบด้วยรหัสครั้งเดียว', str_(user.EmployeeID), 'สร้างโดย ' + str_(user.OtpBy));
+  return Object.assign({ ok: true, token: issueToken_(c, 'auth') }, homeData_(user));
 }
 
 function getHome(token) {
@@ -136,30 +123,35 @@ function register(f) {
   const nameOC = String(f.nameOC || '').trim();
   const ageIC = Number(String(f.ageIC || '').trim());
   const discord = String(f.discord || '').trim();
-  const discordUid = discordUserId_(discord);
   const reason = String(f.reason || '').trim();
 
   if (nameIC.length < 2 || nameIC.length > 60) return { ok: false, message: 'กรุณากรอกชื่อ IC (2–60 ตัวอักษร)' };
   if (nameOC.length < 2 || nameOC.length > 60) return { ok: false, message: 'กรุณากรอกชื่อ OC (2–60 ตัวอักษร)' };
   if (!Number.isInteger(ageIC) || ageIC < 1 || ageIC > 150) return { ok: false, message: 'กรุณากรอกอายุ IC เป็นตัวเลข' };
-  if (!DISCORD_UID_RULE.test(discordUid)) return { ok: false, message: 'Discord UID ต้องเป็นตัวเลข 15–22 หลัก' };
+  if (!DISCORD_UID_RULE.test(discord)) {
+    return { ok: false, message: 'Discord UID ต้องเป็นตัวเลข 15–22 หลัก' };
+  }
   if (reason.length < 10 || reason.length > 1000) return { ok: false, message: 'กรุณาบอกเหตุผลที่อยากสมัครแพทย์ (10–1000 ตัวอักษร)' };
+
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
-    const t = table_(SH.USERS);
-    if (t.rows.some(r => r.Discord && discordUserId_(r.Discord) === discordUid)) {
-      return { ok: false, message: 'Discord UID นี้เคยสมัครแล้ว กรุณาเข้าสู่ระบบด้วยรหัสเดิม' };
+    const users = table_(SH.USERS), apps = applicants_();
+    const key = discordUserId_(discord);
+    if (users.rows.some(r => discordUserId_(r.Discord) === key)) {
+      return { ok: false, message: 'Discord UID นี้เป็นบุคลากรอยู่แล้ว — เข้าสู่ระบบด้วยรหัสพนักงาน (ขอรหัสผ่านครั้งเดียวจากผู้ดูแล)' };
+    }
+    if (apps.rows.some(r => discordUserId_(r.Discord) === key && str_(r.Status) !== APP_STATUS.DONE)) {
+      return { ok: false, message: 'Discord UID นี้สมัครไว้แล้ว — รอผู้ดูแลแจ้งผล' };
     }
 
-    const used = new Set(t.rows.map(r => norm_(r.EmployeeID)));
+    const used = new Set(users.rows.map(r => norm_(r.EmployeeID)).concat(apps.rows.map(r => norm_(r.ApplicantID))));
     let code;
     do { code = 'APP' + Math.floor(100000 + Math.random() * 900000); } while (used.has(code));
 
-    appendObj_(t, {
-      EmployeeID: code, Name: safe_(nameIC), NameOC: safe_(nameOC), AgeIC: ageIC,
-      Discord: discordUid, Reason: safe_(reason), Rank: APPLICANT_RANK,
-      CreatedAt: new Date(), PasswordHash: '', MustChange: true
+    appendObj_(apps, {
+      ApplicantID: code, Name: safe_(nameIC), NameOC: safe_(nameOC), AgeIC: ageIC,
+      Discord: safe_(discord), Reason: safe_(reason), CreatedAt: new Date(), Status: APP_STATUS.NEW
     });
     return { ok: true, code: code, token: issueToken_(code, 'reg') };
   } finally {
@@ -173,11 +165,8 @@ function startExam(token) {
   const tok = readToken_(token, ['auth', 'reg']);
   if (!tok) return { ok: false, expired: true, message: 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่' };
 
-  const user = findUser_(tok.code);
+  const user = tok.type === 'reg' ? applicantExaminee_(tok.code) : findUser_(tok.code);
   if (!user) return { ok: false, message: 'ไม่พบผู้ใช้' };
-  if (tok.type === 'auth' && mustChange_(user)) {
-    return { ok: false, expired: true, message: 'กรุณาเปลี่ยนรหัสผ่านก่อนเข้าสอบ' };
-  }
 
   const exam = findExam_(user.Rank);
   if (!exam) return { ok: false, message: 'ยศ "' + user.Rank + '" ยังไม่มีข้อสอบ' };
@@ -272,14 +261,17 @@ function submitExam(examToken, answers) {
   let promotedTo = '';
   try {
     const users = table_(SH.USERS);
-    const user = users.rows.find(r => norm_(r.EmployeeID) === s.code);
+    const staff = users.rows.find(r => norm_(r.EmployeeID) === s.code);
+    const user = staff || applicantExaminee_(s.code);
     const name = user ? user.Name : '';
 
     // ผลที่ประกาศได้ทันที (ไม่มีข้อเขียน หรือส่งเกินเวลา) → เลื่อนยศ + ส่ง Discord ตอนนี้เลย
     const final = !pending && review === '';
-    if (final && passed && user && !hasWritten) promotedTo = promote_(users, user, s.rank);
+    if (final && passed && staff && !hasWritten) promotedTo = promote_(users, staff, s.rank);
     const discord = final ? notifyDiscord_({ EmployeeID: s.code, Name: name, Rank: s.rank, ExamName: s.examName },
       { score, total, percent, passed, passPercent: s.passPercent, promotedTo }, { user }) : '';
+    if (!staff) setApplicantResult_(s.code, final ? (passed ? APP_STATUS.PASS : APP_STATUS.FAIL) : APP_STATUS.WAIT,
+      final ? score + '/' + total + ' (' + percent + '%)' : 'ช้อย ' + cScore + '/' + cMax + ' · รอตรวจข้อเขียน');
 
     appendObj_(table_(SH.RESULTS), {
       Timestamp: new Date(), ResultID: resultId, EmployeeID: s.code, Name: name,
@@ -412,6 +404,8 @@ function ackNotices(token, resultIds) {
  * แล้วกดเมนู ระบบสอบ → คำนวณผลข้อเขียนที่ตรวจแล้ว
  */
 function gradeWritten() {
+  const ui = sheetUi_();
+  if (!ui) throw new Error('ใช้ได้จากเมนู "ระบบสอบ" ในไฟล์ Google Sheet เท่านั้น');
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   let done = 0, waiting = 0;
@@ -428,7 +422,7 @@ function gradeWritten() {
   } finally {
     lock.releaseLock();
   }
-  SpreadsheetApp.getUi().alert('คำนวณผลแล้ว ' + done + ' รายการ' +
+  ui.alert('คำนวณผลแล้ว ' + done + ' รายการ' +
     (waiting ? '\nยังรอให้คะแนนข้อเขียนไม่ครบ ' + waiting + ' รายการ' : ''));
 }
 
@@ -451,13 +445,14 @@ function finalize_(res, users, r, writtenScore, grader) {
   setCell_(res, r, 'UpdatedAt', new Date());
 
   let promotedTo = '';
-  if (passed) {
-    const user = users.rows.find(u => norm_(u.EmployeeID) === norm_(r.EmployeeID));
-    promotedTo = user ? promote_(users, user, r.Rank) : '';
+  const staff = users.rows.find(u => norm_(u.EmployeeID) === norm_(r.EmployeeID));
+  if (passed && staff) {
+    promotedTo = promote_(users, staff, r.Rank);
     if (promotedTo) setCell_(res, r, 'Note', 'เลื่อนยศเป็น ' + promotedTo);
   }
+  if (!staff) setApplicantResult_(r.EmployeeID, passed ? APP_STATUS.PASS : APP_STATUS.FAIL, score + '/' + total + ' (' + percent + '%)');
   const out = { score, total, percent, passed, passPercent, promotedTo, regraded: wasDone };
-  const user = users.rows.find(u => norm_(u.EmployeeID) === norm_(r.EmployeeID));
+  const user = staff || applicantExaminee_(r.EmployeeID);
   const discord = notifyDiscord_(r, out, { user, grader, regraded: wasDone });
   if (discord) setCell_(res, r, 'DiscordStatus', discord + ' · ' + fmtDate_(new Date()));
   out.discord = discord;
@@ -481,10 +476,7 @@ function levelOf_(rank) {
   return adminRanks_().indexOf(k) !== -1 ? 1 : 0;
 }
 function isAdmin_(rank) { return levelOf_(rank) >= 1 || isSuper_(rank); }
-function isSuper_(rank) {
-  const alias = String(rank == null ? '' : rank).trim().toUpperCase().replace(/[\s.]/g, '');
-  return levelOf_(rank) >= 2 || alias === 'DEV' || alias === 'DEVELOPER';
-}
+function isSuper_(rank) { const alias = String(rank == null ? '' : rank).trim().toUpperCase().replace(/[\s.]/g, ''); return levelOf_(rank) >= 2 || alias === 'DEV' || alias === 'DEVELOPER'; }
 
 function whoOf_(user) { return str_(user.Name) + ' (' + str_(user.EmployeeID) + ')'; }
 
@@ -507,11 +499,18 @@ function requireAdmin_(token) {
   const tok = readToken_(token, ['auth']);
   if (!tok) return { err: { ok: false, expired: true, message: 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่' } };
   const user = findUser_(tok.code);
-  if (!user || mustChange_(user) || !isAdmin_(user.Rank)) {
+  if (!user || !isAdmin_(user.Rank)) {
     return { err: { ok: false, message: 'คุณไม่มีสิทธิ์ใช้งานส่วนนี้' } };
   }
-  return { user };
+  return { user, level: actorLevel_(user) };
 }
+
+/** ระดับของผู้ใช้: 2 = SUPER, 1 = ADMIN, 0 = ทั่วไป */
+function actorLevel_(user) { return !user ? 0 : isSuper_(user.Rank) ? 2 : isAdmin_(user.Rank) ? 1 : 0; }
+function rankLevel_(rank) { return isSuper_(rank) ? 2 : isAdmin_(rank) ? 1 : 0; }
+
+/** ADMIN จัดการได้เฉพาะบัญชีที่ไม่ใช่ผู้พัฒนา · SUPER จัดการได้ทุกบัญชี */
+function canManage_(actor, targetRank) { return actorLevel_(actor) >= 2 || rankLevel_(targetRank) < 2; }
 
 function adminGetQuestions(token) {
   const adm = requireAdmin_(token);
@@ -586,7 +585,7 @@ function adminDeleteQuestion(token, id) {
 
 /** สร้างข้อมูลผลสอบ 1 รายการ พร้อมคำตอบข้อเขียน สำหรับหน้าผู้บริหาร */
 function resultDetail_(r, ansRows, users, qmap) {
-  const u = users.find(x => norm_(x.EmployeeID) === norm_(r.EmployeeID));
+  const u = users.find(x => norm_(x.EmployeeID) === norm_(r.EmployeeID)) || applicantExaminee_(r.EmployeeID);
   return Object.assign(publicResult_(r), {
     employeeId: str_(r.EmployeeID), name: str_(r.Name), rank: str_(r.Rank), gradedBy: str_(r.GradedBy),
     applicant: u ? { nameOC: str_(u.NameOC), age: str_(u.AgeIC), discord: str_(u.Discord), reason: str_(u.Reason) } : null,
@@ -692,14 +691,6 @@ const WEBHOOK_RULE = /^https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/w
 function discordWebhook_() { return PropertiesService.getScriptProperties().getProperty('DISCORD_WEBHOOK') || ''; }
 function sendDiscord_(exam) { return !!exam && truthy_(exam.SendDiscord); }
 
-/**
- * Run once from the Apps Script editor to authorize UrlFetchApp for Discord webhooks.
- * This harmless request sends no application or user data.
- */
-function authorizeUrlFetch() {
-  return UrlFetchApp.fetch('https://www.google.com/generate_204', { muteHttpExceptions: true }).getResponseCode();
-}
-
 /** ดึง Discord user ID จากลิงก์โปรไฟล์ หรือเลข ID ตรงๆ */
 function discordUserId_(v) {
   v = str_(v).trim();
@@ -730,7 +721,7 @@ function notifyDiscord_(r, out, opts) {
   opts = opts || {};
   const exam = findExam_(r.Rank);
   if (!sendDiscord_(exam)) return '';
-  const user = opts.user || findUser_(r.EmployeeID);
+  const user = opts.user || findUser_(r.EmployeeID) || applicantExaminee_(r.EmployeeID);
   const uid = user ? discordUserId_(user.Discord) : '';
   const fields = [
     { name: 'ผู้สอบ', value: (str_(r.Name) || '-') + ' (' + str_(r.EmployeeID) + ')', inline: true },
@@ -757,7 +748,6 @@ function notifyDiscord_(r, out, opts) {
 /* ---------- รูปภาพประกอบข้อสอบ (เก็บใน Google Drive ของเจ้าของระบบ ไม่แชร์สาธารณะ) ---------- */
 
 const IMAGE_FOLDER_NAME = 'ระบบสอบแพทย์ - รูปข้อสอบ';
-const ATTENDANCE_FOLDER_NAME = 'ระบบสอบแพทย์ - หลักฐานลงเวลา';
 const IMAGE_ID_RULE = /^[A-Za-z0-9_-]{20,}$/;
 
 function ensureImageFolder_() {
@@ -766,15 +756,6 @@ function ensureImageFolder_() {
   if (id) { try { return DriveApp.getFolderById(id); } catch (e) { /* ถูกลบไปแล้ว → สร้างใหม่ */ } }
   const folder = DriveApp.createFolder(IMAGE_FOLDER_NAME);
   props.setProperty('IMG_FOLDER_ID', folder.getId());
-  return folder;
-}
-
-function ensureAttendanceFolder_() {
-  const props = PropertiesService.getScriptProperties();
-  const id = props.getProperty('ATTENDANCE_FOLDER_ID');
-  if (id) { try { return DriveApp.getFolderById(id); } catch (e) { /* folder removed; recreate */ } }
-  const folder = DriveApp.createFolder(ATTENDANCE_FOLDER_NAME);
-  props.setProperty('ATTENDANCE_FOLDER_ID', folder.getId());
   return folder;
 }
 
@@ -1085,28 +1066,35 @@ function adminExportReport(token, f) {
   }
 }
 
-/* ---------- Super Admin (ผู้พัฒนา): ผู้ใช้ / สิทธิ์ / ชุดข้อสอบ ---------- */
+/* ---------- ADMIN ขึ้นไป: ผู้ใช้ / สิทธิ์ / ชุดข้อสอบ (ชื่อฟังก์ชันยังขึ้นต้นด้วย super เพื่อให้หน้าเว็บเดิมเรียกได้) ---------- */
 
 function requireSuper_(token) {
   const tok = readToken_(token, ['auth']);
   if (!tok) return { err: { ok: false, expired: true, message: 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่' } };
   const user = findUser_(tok.code);
-  if (!user || mustChange_(user) || !isSuper_(user.Rank)) {
+  if (!user || !isSuper_(user.Rank)) {
     return { err: { ok: false, message: 'เฉพาะผู้พัฒนาเท่านั้น' } };
   }
-  return { user };
+  return { user, level: 2 };
 }
 
-/** ข้อมูลทั้งหมดสำหรับหน้าผู้พัฒนา */
+/** ข้อมูลทั้งหมดสำหรับหน้าจัดการ (ADMIN ขึ้นไป) */
 function superGetAll(token) {
-  const sup = requireSuper_(token);
+  const sup = requireAdmin_(token);
   if (sup.err) return sup.err;
 
-  const users = table_(SH.USERS).rows.map(u => ({
-    id: str_(u.EmployeeID), name: str_(u.Name), nameOC: str_(u.NameOC), age: str_(u.AgeIC),
-    discord: str_(u.Discord), rank: str_(u.Rank), createdAt: fmtDate_(u.CreatedAt),
-    hasPassword: !!str_(u.PasswordHash).trim(), mustChange: mustChange_(u), level: levelOf_(u.Rank)
-  }));
+  const now = Date.now();
+  const users = table_(SH.USERS).rows.map(u => {
+    const exp = u.OtpExpires instanceof Date ? u.OtpExpires.getTime() : 0;
+    const otpActive = !!str_(u.OtpHash).trim() && exp > now;
+    return {
+      id: str_(u.EmployeeID), name: str_(u.Name), nameOC: str_(u.NameOC), age: str_(u.AgeIC),
+      discord: str_(u.Discord), rank: str_(u.Rank), createdAt: fmtDate_(u.CreatedAt),
+      level: rankLevel_(u.Rank), manageable: canManage_(sup.user, u.Rank),
+      otpActive: otpActive, otpExpires: otpActive ? fmtDate_(u.OtpExpires) : '',
+      otpBy: str_(u.OtpBy), lastLogin: fmtDate_(u.LastLoginAt)
+    };
+  });
   const perms = ss_().getSheetByName(SH.PERMS)
     ? table_(SH.PERMS).rows.filter(r => norm_(r.Level) === 'ADMIN')
         .map(r => ({ rank: str_(r.Rank), by: str_(r.UpdatedBy), at: fmtDate_(r.UpdatedAt) }))
@@ -1131,13 +1119,15 @@ function superGetAll(token) {
   users.forEach(u => { if (u.rank) ranks.add(u.rank); });
 
   const hook = discordWebhook_();
-  const discord = { configured: !!hook, masked: hook ? hook.replace(/\/[\w-]+$/, '/••••••' + hook.slice(-4)) : '' };
-  return { ok: true, me: str_(sup.user.EmployeeID), users, perms, exams, discord, superRanks: SUPER_RANKS, ranks: Array.from(ranks) };
+  const discord = { configured: !!hook, masked: hook && sup.level >= 2 ? hook.replace(/\/[\w-]+$/, '/••••••' + hook.slice(-4)) : '' };
+  return { ok: true, me: str_(sup.user.EmployeeID), myLevel: sup.level, myRank: str_(sup.user.Rank),
+           users, perms, exams, discord, superRanks: SUPER_RANKS, otpHours: OTP_HOURS, defaultOtpHours: DEFAULT_OTP_HOURS,
+           ranks: Array.from(ranks).filter(r => sup.level >= 2 || !isSuper_(r)) };
 }
 
 /** เพิ่มผู้ใช้ (isNew) หรือแก้ชื่อ/ยศ */
 function superSaveUser(token, u) {
-  const sup = requireSuper_(token);
+  const sup = requireAdmin_(token);
   if (sup.err) return sup.err;
   u = u || {};
   const id = String(u.id || '').trim();
@@ -1146,6 +1136,8 @@ function superSaveUser(token, u) {
   if (!/^[A-Za-z0-9_-]{2,20}$/.test(id)) return { ok: false, message: 'รหัสพนักงานใช้ได้เฉพาะ A–Z, 0–9, _ และ - (2–20 ตัว)' };
   if (name.length < 2 || name.length > 60) return { ok: false, message: 'กรุณากรอกชื่อ (2–60 ตัวอักษร)' };
   if (!rank || rank.length > 40) return { ok: false, message: 'กรุณากรอกยศ' };
+  if (!canManage_(sup.user, rank)) return { ok: false, message: 'เฉพาะผู้พัฒนาเท่านั้นที่ตั้งยศผู้พัฒนาได้' };
+  if (rankKey_(rank) === rankKey_(APPLICANT_RANK)) return { ok: false, message: 'ผู้สมัครเก็บแยกในหน้า "ผู้สมัคร" — ให้ใช้ยศของบุคลากร' };
   const discordIn = String(u.discord || '').trim();
   if (discordIn && !discordUserId_(discordIn)) {
     return { ok: false, message: 'Discord User ID ต้องเป็นตัวเลข 15–22 หลัก' };
@@ -1161,11 +1153,12 @@ function superSaveUser(token, u) {
     const row = t.rows.find(r => norm_(r.EmployeeID) === norm_(id));
     if (u.isNew) {
       if (row) return { ok: false, message: 'รหัส ' + id + ' มีอยู่แล้ว' };
-      appendObj_(t, { EmployeeID: id, Name: safe_(name), Rank: rank, Discord: discordVal, CreatedAt: new Date(), PasswordHash: '', MustChange: true });
+      appendObj_(t, { EmployeeID: id, Name: safe_(name), Rank: rank, Discord: discordVal, CreatedAt: new Date() });
       audit_(whoOf_(sup.user), 'เพิ่มผู้ใช้', id, name + ' · ' + rank);
     } else {
       if (!row) return { ok: false, message: 'ไม่พบผู้ใช้ ' + id };
-      if (norm_(id) === me && !isSuper_(rank)) return { ok: false, message: 'ไม่สามารถลดสิทธิ์ของตัวเองได้ (กันล็อกตัวเองออกจากระบบ)' };
+      if (!canManage_(sup.user, row.Rank)) return { ok: false, message: 'ADMIN แก้ไขบัญชีผู้พัฒนาไม่ได้' };
+      if (norm_(id) === me && rankLevel_(rank) < sup.level) return { ok: false, message: 'ไม่สามารถลดสิทธิ์ของตัวเองได้ (กันล็อกตัวเองออกจากระบบ)' };
       const old = { name: str_(row.Name), rank: str_(row.Rank), discord: discordUserId_(row.Discord) };
       setCell_(t, row, 'Name', safe_(name));
       setCell_(t, row, 'Rank', rank);
@@ -1176,36 +1169,86 @@ function superSaveUser(token, u) {
       if (u.discord !== undefined && old.discord !== discordVal) changes.push('Discord UID เปลี่ยน');
       audit_(whoOf_(sup.user), 'แก้ไขผู้ใช้', id, changes.join(' · ') || 'บันทึกโดยไม่มีการเปลี่ยนค่า');
     }
-    return { ok: true, defaultPassword: u.isNew ? initialPassword_() : '' };
+    return { ok: true };
   } finally {
     lock.releaseLock();
   }
 }
 
-/** รีเซ็ตรหัสผ่านเป็น 1234 และบังคับเปลี่ยนตอนเข้าสู่ระบบ */
-function superResetPassword(token, id) {
-  const sup = requireSuper_(token);
-  if (sup.err) return sup.err;
-  if (norm_(id) === norm_(sup.user.EmployeeID)) return { ok: false, message: 'เปลี่ยนรหัสของตัวเองที่ปุ่ม "เปลี่ยนรหัสผ่าน" ในหน้าหลัก' };
-  const initialPassword = initialPassword_();
+/**
+ * สร้างรหัสผ่านครั้งเดียว (ADMIN ขึ้นไป) — คืนรหัสให้ผู้สร้างเห็น "ครั้งเดียว" ในหน้าเว็บ
+ * รหัสเดิมที่ยังไม่ได้ใช้จะถูกแทนที่ · ADMIN สร้างให้บัญชีผู้พัฒนาไม่ได้
+ */
+function adminGenerateOtp(token, id, hours) {
+  const adm = requireAdmin_(token);
+  if (adm.err) return adm.err;
+  hours = Number(hours) || DEFAULT_OTP_HOURS;
+  if (OTP_HOURS.indexOf(hours) === -1) return { ok: false, message: 'อายุรหัสไม่ถูกต้อง' };
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
     const t = table_(SH.USERS);
     const row = t.rows.find(r => norm_(r.EmployeeID) === norm_(id));
     if (!row) return { ok: false, message: 'ไม่พบผู้ใช้' };
-    setCell_(t, row, 'PasswordHash', '');
-    setCell_(t, row, 'MustChange', true);
-    CacheService.getScriptCache().remove('fail_' + norm_(id));
-    audit_(whoOf_(sup.user), 'รีเซ็ตรหัสผ่าน', String(id), '');
-    return { ok: true, defaultPassword: initialPassword };
+    if (!canManage_(adm.user, row.Rank)) return { ok: false, message: 'ADMIN สร้างรหัสให้บัญชีผู้พัฒนาไม่ได้' };
+    const out = issueOtp_(t, row, hours, whoOf_(adm.user));
+    audit_(whoOf_(adm.user), 'สร้างรหัสผ่านครั้งเดียว', str_(row.EmployeeID), 'อายุ ' + hours + ' ชม.');
+    let url = '';
+    try { url = ScriptApp.getService().getUrl() || ''; } catch (e) {}
+    return { ok: true, id: str_(row.EmployeeID), name: str_(row.Name), otp: out.otp, expires: out.expires, hours: hours, url: url };
   } finally {
     lock.releaseLock();
   }
 }
 
+/** ยกเลิกรหัสผ่านครั้งเดียวที่ยังไม่ได้ใช้ */
+function adminRevokeOtp(token, id) {
+  const adm = requireAdmin_(token);
+  if (adm.err) return adm.err;
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const t = table_(SH.USERS);
+    const row = t.rows.find(r => norm_(r.EmployeeID) === norm_(id));
+    if (!row) return { ok: false, message: 'ไม่พบผู้ใช้' };
+    if (!canManage_(adm.user, row.Rank)) return { ok: false, message: 'ADMIN จัดการบัญชีผู้พัฒนาไม่ได้' };
+    setCell_(t, row, 'OtpHash', ''); setCell_(t, row, 'OtpExpires', '');
+    audit_(whoOf_(adm.user), 'ยกเลิกรหัสผ่านครั้งเดียว', str_(row.EmployeeID), '');
+    return { ok: true };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** หน้าต่างของไฟล์ Google Sheet (มีเฉพาะตอนกดจากเมนูในชีต — หน้าเว็บและการเรียกจากภายนอกไม่มี) */
+function sheetUi_() {
+  try { return SpreadsheetApp.getUi(); } catch (e) { return null; }
+}
+
+/**
+ * ผู้พัฒนาคนแรก / กู้คืนบัญชีผู้พัฒนา: เปิดไฟล์ Google Sheet → เมนู "ระบบสอบ" → "สร้างรหัสผ่านครั้งเดียวให้ DEV001"
+ * ทำงานได้เฉพาะจากเมนูในชีต (คนที่เปิดไฟล์ชีตได้เท่านั้น) — ถ้าถูกเรียกจากหน้าเว็บจะไม่ทำอะไรและไม่คืนรหัส
+ */
+function createDevOtp() {
+  const ui = sheetUi_();
+  if (!ui) throw new Error('ใช้ได้จากเมนู "ระบบสอบ" ในไฟล์ Google Sheet เท่านั้น');
+  const t = table_(SH.USERS);
+  if (!t.rows.some(r => norm_(r.EmployeeID) === 'DEV001')) {
+    appendObj_(t, { EmployeeID: 'DEV001', Name: 'ผู้พัฒนาระบบ', Rank: SUPER_RANKS[0], CreatedAt: new Date() });
+  }
+  const t2 = table_(SH.USERS);
+  const row = t2.rows.find(r => norm_(r.EmployeeID) === 'DEV001');
+  if (!isSuper_(row.Rank)) setCell_(t2, row, 'Rank', SUPER_RANKS[0]);
+  const by = 'เจ้าของไฟล์' + (Session.getEffectiveUser().getEmail() ? ' (' + Session.getEffectiveUser().getEmail() + ')' : '');
+  const out = issueOtp_(t2, row, DEFAULT_OTP_HOURS, by);
+  audit_(by, 'สร้างรหัสผ่านครั้งเดียวให้ DEV001', 'DEV001', 'อายุ ' + DEFAULT_OTP_HOURS + ' ชม.');
+  ui.alert('รหัสผ่านครั้งเดียวสำหรับผู้พัฒนา',
+    'รหัสพนักงาน: DEV001\nรหัสผ่านครั้งเดียว: ' + out.otp + '\nหมดอายุ: ' + out.expires +
+    '\n\nใช้เข้าสู่ระบบได้ 1 ครั้ง — ปิดหน้าต่างนี้แล้วรหัสจะไม่แสดงอีก', ui.ButtonSet.OK);
+}
+
 function superDeleteUser(token, id) {
-  const sup = requireSuper_(token);
+  const sup = requireAdmin_(token);
   if (sup.err) return sup.err;
   if (norm_(id) === norm_(sup.user.EmployeeID)) return { ok: false, message: 'ไม่สามารถลบบัญชีของตัวเองได้' };
   const lock = LockService.getScriptLock();
@@ -1214,6 +1257,7 @@ function superDeleteUser(token, id) {
     const t = table_(SH.USERS);
     const row = t.rows.find(r => norm_(r.EmployeeID) === norm_(id));
     if (!row) return { ok: false, message: 'ไม่พบผู้ใช้' };
+    if (!canManage_(sup.user, row.Rank)) return { ok: false, message: 'ADMIN ลบบัญชีผู้พัฒนาไม่ได้' };
     t.sh.deleteRow(row._row);
     audit_(whoOf_(sup.user), 'ลบผู้ใช้', String(id), str_(row.Name) + ' · ' + str_(row.Rank));
     return { ok: true };
@@ -1224,11 +1268,14 @@ function superDeleteUser(token, id) {
 
 /** ให้/ถอนสิทธิ์ผู้บริหารของยศ — level: 'ADMIN' หรือ 'NONE' */
 function superSetPerm(token, rank, level) {
-  const sup = requireSuper_(token);
+  const sup = requireAdmin_(token);
   if (sup.err) return sup.err;
   rank = String(rank || '').trim();
   if (!rank || rank.length > 40) return { ok: false, message: 'กรุณากรอกชื่อยศ' };
-  if (SUPER_RANKS.map(rankKey_).indexOf(rankKey_(rank)) !== -1) return { ok: false, message: 'ยศผู้พัฒนามีสิทธิ์สูงสุดอยู่แล้ว' };
+  if (isSuper_(rank)) return { ok: false, message: 'ยศผู้พัฒนามีสิทธิ์สูงสุดอยู่แล้ว' };
+  if (level !== 'ADMIN' && sup.level < 2 && rankKey_(rank) === rankKey_(sup.user.Rank)) {
+    return { ok: false, message: 'ถอนสิทธิ์ ADMIN ของยศตัวเองไม่ได้ (กันล็อกตัวเองออก) — ให้ผู้บริหารคนอื่นหรือผู้พัฒนาทำแทน' };
+  }
 
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -1290,7 +1337,7 @@ function ensurePermsSheet_() {
 
 /** เพิ่มหรือแก้ตั้งค่าชุดข้อสอบ (ชีต Exams) */
 function superSaveExam(token, e) {
-  const sup = requireSuper_(token);
+  const sup = requireAdmin_(token);
   if (sup.err) return sup.err;
   e = e || {};
   const rank = String(e.rank || '').trim();
@@ -1332,31 +1379,199 @@ function superSaveExam(token, e) {
   }
 }
 
+
+/* ---------- ผู้สมัคร (ชีต Applicants แยกจาก Users) ---------- */
+
+function ensureApplicantsSheet_() {
+  const ss = ss_();
+  if (ss.getSheetByName(SH.APPLICANTS)) return;
+  const sh = ss.insertSheet(SH.APPLICANTS);
+  sh.getRange(1, 1, 1, APP_HEADERS.length).setValues([APP_HEADERS]).setFontWeight('bold').setBackground('#d9f2ef');
+  sh.setFrozenRows(1);
+}
+
+function applicants_() { ensureApplicantsSheet_(); APP_INDEX_ = null; return table_(SH.APPLICANTS); }
+
+let APP_INDEX_ = null;   // อ่านชีต Applicants ครั้งเดียวต่อการเรียก (ล้างทุกครั้งที่มีการเขียน)
+function findApplicant_(code) {
+  const c = norm_(code);
+  if (!c) return null;
+  if (!APP_INDEX_) {
+    const rows = applicants_().rows, m = {};
+    rows.forEach(r => { m[norm_(r.ApplicantID)] = r; });
+    APP_INDEX_ = m;
+  }
+  return APP_INDEX_[c] || null;
+}
+
+/** ผู้สมัครในรูปแบบเดียวกับแถวผู้ใช้ (ใช้ตอนสอบ ตรวจ และแจ้งผล) */
+function applicantExaminee_(code) {
+  const a = findApplicant_(code);
+  if (!a) return null;
+  return { EmployeeID: str_(a.ApplicantID), Name: str_(a.Name), NameOC: str_(a.NameOC), AgeIC: str_(a.AgeIC),
+           Discord: str_(a.Discord), Reason: str_(a.Reason), Rank: APPLICANT_RANK, isApplicant: true };
+}
+
+function setApplicantResult_(code, status, text) {
+  try {
+    const t = applicants_();
+    const row = t.rows.find(r => norm_(r.ApplicantID) === norm_(code));
+    if (!row || str_(row.Status) === APP_STATUS.DONE) return;
+    setCell_(t, row, 'Status', status);
+    setCell_(t, row, 'LastResult', text);
+    setCell_(t, row, 'LastExamAt', new Date());
+  } catch (e) { /* ไม่ให้การอัปเดตสถานะทำให้ผลสอบไม่ถูกบันทึก */ }
+}
+
+/** รหัสพนักงานถัดไป เช่น MD019 → MD020 (ดูจากรูปแบบรหัสที่ใช้มากที่สุดในชีต Users) */
+function suggestStaffId_(users) {
+  const groups = {};
+  users.forEach(u => {
+    const m = /^([A-Za-z]+)(\d+)$/.exec(str_(u.EmployeeID).trim());
+    if (!m || /^(DEV|APP)$/i.test(m[1])) return;
+    const g = groups[m[1].toUpperCase()] = groups[m[1].toUpperCase()] || { n: 0, max: 0, width: 0 };
+    g.n++; g.max = Math.max(g.max, Number(m[2])); g.width = Math.max(g.width, m[2].length);
+  });
+  const best = Object.keys(groups).sort((a, b) => groups[b].n - groups[a].n)[0];
+  if (!best) return 'MD001';
+  const g = groups[best], used = new Set(users.map(u => norm_(u.EmployeeID)));
+  let n = g.max, id;
+  do { n++; id = best + String(n).padStart(g.width, '0'); } while (used.has(id));
+  return id;
+}
+
+/** ADMIN ขึ้นไป: รายชื่อผู้สมัคร + ผลสอบล่าสุด */
+function adminGetApplicants(token) {
+  const adm = requireAdmin_(token);
+  if (adm.err) return adm.err;
+  const latest = {};
+  table_(SH.RESULTS).rows.forEach(r => { latest[norm_(r.EmployeeID)] = r; });
+  const users = table_(SH.USERS).rows;
+  const exam = findExam_(APPLICANT_RANK);
+  const list = applicants_().rows.map(a => {
+    const r = latest[norm_(a.ApplicantID)];
+    return {
+      id: str_(a.ApplicantID), name: str_(a.Name), nameOC: str_(a.NameOC), age: str_(a.AgeIC),
+      discord: discordUserId_(a.Discord) || str_(a.Discord), reason: str_(a.Reason), createdAt: fmtDate_(a.CreatedAt),
+      status: str_(a.Status) || APP_STATUS.NEW, lastResult: str_(a.LastResult), lastExamAt: fmtDate_(a.LastExamAt),
+      acceptedAs: str_(a.AcceptedAs), acceptedBy: str_(a.AcceptedBy), acceptedAt: fmtDate_(a.AcceptedAt),
+      result: r ? publicResult_(r) : null
+    };
+  }).reverse();
+  const ranks = Array.from(new Set(users.map(u => str_(u.Rank)).concat(table_(SH.EXAMS).rows.map(e => str_(e.NextRank)))))
+    .filter(r => r && rankKey_(r) !== rankKey_(APPLICANT_RANK) && (adm.level >= 2 || !isSuper_(r)));
+  return { ok: true, applicants: list, suggestId: suggestStaffId_(users),
+           suggestRank: exam ? str_(exam.NextRank) : '', ranks: ranks };
+}
+
+/** ADMIN ขึ้นไป: รับผู้สมัครเข้าเป็นบุคลากร → สร้างแถวในชีต Users (ข้อมูลใบสมัครยังอยู่ในชีต Applicants) */
+function adminAcceptApplicant(token, appId, f) {
+  const adm = requireAdmin_(token);
+  if (adm.err) return adm.err;
+  f = f || {};
+  const id = String(f.id || '').trim(), rank = String(f.rank || '').trim();
+  if (!/^[A-Za-z0-9_-]{2,20}$/.test(id)) return { ok: false, message: 'รหัสพนักงานใช้ได้เฉพาะ A–Z, 0–9, _ และ - (2–20 ตัว)' };
+  if (!rank || rank.length > 40) return { ok: false, message: 'กรุณากรอกยศ' };
+  if (rankKey_(rank) === rankKey_(APPLICANT_RANK)) return { ok: false, message: 'ต้องเลือกยศของบุคลากร (ไม่ใช่ยศผู้สมัคร)' };
+  if (!canManage_(adm.user, rank)) return { ok: false, message: 'เฉพาะผู้พัฒนาเท่านั้นที่ตั้งยศผู้พัฒนาได้' };
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const apps = applicants_(), users = table_(SH.USERS);
+    const a = apps.rows.find(r => norm_(r.ApplicantID) === norm_(appId));
+    if (!a) return { ok: false, message: 'ไม่พบผู้สมัคร' };
+    if (str_(a.Status) === APP_STATUS.DONE) return { ok: false, message: 'ผู้สมัครคนนี้รับเข้าไปแล้วเป็น ' + str_(a.AcceptedAs) };
+    if (users.rows.some(u => norm_(u.EmployeeID) === norm_(id))) return { ok: false, message: 'รหัส ' + id + ' มีอยู่แล้ว' };
+    const uid = discordUserId_(a.Discord);
+    if (uid && users.rows.some(u => discordUserId_(u.Discord) === uid)) return { ok: false, message: 'Discord UID นี้เป็นบุคลากรอยู่แล้ว' };
+    appendObj_(users, { EmployeeID: id, Name: str_(a.Name), NameOC: str_(a.NameOC), AgeIC: str_(a.AgeIC),
+                        Discord: uid || str_(a.Discord), Reason: str_(a.Reason), Rank: rank, CreatedAt: new Date(),
+                        FromApplicant: str_(a.ApplicantID) });
+    setCell_(apps, a, 'Status', APP_STATUS.DONE);
+    setCell_(apps, a, 'AcceptedAs', id);
+    setCell_(apps, a, 'AcceptedBy', whoOf_(adm.user));
+    setCell_(apps, a, 'AcceptedAt', new Date());
+    audit_(whoOf_(adm.user), 'รับผู้สมัครเข้าเป็นบุคลากร', str_(a.ApplicantID) + ' → ' + id, str_(a.Name) + ' · ' + rank);
+    return { ok: true, id: id };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function adminDeleteApplicant(token, appId) {
+  const adm = requireAdmin_(token);
+  if (adm.err) return adm.err;
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const t = applicants_();
+    const a = t.rows.find(r => norm_(r.ApplicantID) === norm_(appId));
+    if (!a) return { ok: false, message: 'ไม่พบผู้สมัคร' };
+    t.sh.deleteRow(a._row);
+    audit_(whoOf_(adm.user), 'ลบผู้สมัคร', str_(a.ApplicantID), str_(a.Name) + ' · ' + str_(a.Status));
+    return { ok: true };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** ย้ายผู้สมัครที่เคยถูกบันทึกในชีต Users ไปชีต Applicants (ครั้งเดียวตอน setup) */
+function migrateApplicants_() {
+  const users = table_(SH.USERS), apps = applicants_();
+  const latest = {};
+  table_(SH.RESULTS).rows.forEach(r => { latest[norm_(r.EmployeeID)] = r; });
+  const have = new Set(apps.rows.map(a => norm_(a.ApplicantID)));
+  const move = users.rows.filter(u => rankKey_(u.Rank) === rankKey_(APPLICANT_RANK));
+  move.forEach(u => {
+    if (have.has(norm_(u.EmployeeID))) return;
+    const r = latest[norm_(u.EmployeeID)];
+    const status = !r ? APP_STATUS.NEW : str_(r.Result) === PENDING || str_(r.Review) === REVIEW_AUTO ? APP_STATUS.WAIT
+      : str_(r.Result) === 'ผ่าน' ? APP_STATUS.PASS : APP_STATUS.FAIL;
+    appendObj_(apps, { ApplicantID: str_(u.EmployeeID), Name: str_(u.Name), NameOC: str_(u.NameOC), AgeIC: str_(u.AgeIC),
+                       Discord: str_(u.Discord), Reason: str_(u.Reason), CreatedAt: u.CreatedAt || new Date(), Status: status,
+                       LastResult: r && str_(r.Score) !== '' ? str_(r.Score) + '/' + str_(r.Total) + ' (' + str_(r.Percent) + '%)' : '',
+                       LastExamAt: r ? r.Timestamp : '' });
+  });
+  move.sort((a, b) => b._row - a._row).forEach(u => users.sh.deleteRow(u._row));   // ลบจากล่างขึ้นบน แถวจะไม่เลื่อน
+  if (move.length) audit_('setup', 'ย้ายผู้สมัครออกจากชีต Users', move.length + ' คน', move.map(u => str_(u.EmployeeID)).join(', ').slice(0, 400));
+  return move.length;
+}
+
 /* ---------- ตัวช่วย: รหัสผ่านและ token ---------- */
 
-function validatePassword_(pw) {
-  pw = String(pw || '');
-  const miss = [];
-  if (pw.length < 6 || pw.length > 10) miss.push('ความยาว 6–10 ตัว');
-  if (!/\d/.test(pw)) miss.push('ตัวเลข');
-  if (!/[a-z]/.test(pw)) miss.push('ตัวอักษรภาษาอังกฤษตัวเล็ก');
-  if (!/[A-Z]/.test(pw)) miss.push('ตัวอักษรภาษาอังกฤษตัวใหญ่');
-  if (!/[!-\/:-@\[-`{-~]/.test(pw)) miss.push('อักขระพิเศษ');
-  if (/[^!-~]/.test(pw)) miss.push('ห้ามมีช่องว่างหรืออักษรภาษาไทย');
-  if (miss.length || !PW_RULE.test(pw)) return 'รหัสผ่านยังไม่ครบเงื่อนไข: ' + miss.join(', ');
-  return '';
+/** สร้างรหัส 8 ตัวแบบสุ่ม (ใช้ UUID เป็นแหล่งสุ่มของ Apps Script) */
+function newOtp_() {
+  let out = '';
+  while (out.length < OTP_LENGTH) {
+    const hex = Utilities.getUuid().replace(/-/g, '');
+    for (let i = 0; i + 1 < hex.length && out.length < OTP_LENGTH; i += 2) {
+      const b = parseInt(hex.substr(i, 2), 16);
+      if (b < 256 - (256 % OTP_ALPHABET.length)) out += OTP_ALPHABET.charAt(b % OTP_ALPHABET.length);
+    }
+  }
+  return out;
 }
 
-function checkPassword_(user, pw) {
-  // ผู้ใช้ที่ถูกบังคับตั้งรหัสใหม่ให้ใช้รหัสเริ่มต้น แม้ยังมี hash เก่าค้างอยู่
-  if (mustChange_(user)) return String(pw) === initialPassword_();
-  const h = String(user.PasswordHash || '').trim();
-  if (!h) return String(pw) === initialPassword_();
-  return h === hash_(user.EmployeeID, pw);
+/** บันทึก hash ของรหัสใหม่ลงแถวผู้ใช้ แล้วคืนรหัสจริง (แสดงครั้งเดียว) */
+function issueOtp_(t, row, hours, by) {
+  const otp = newOtp_();
+  const exp = new Date(Date.now() + hours * 3600000);
+  setCell_(t, row, 'OtpHash', hash_(row.EmployeeID, otp));
+  setCell_(t, row, 'OtpExpires', exp);
+  setCell_(t, row, 'OtpBy', by);
+  setCell_(t, row, 'OtpCreatedAt', new Date());
+  CacheService.getScriptCache().remove('fail_' + norm_(row.EmployeeID));
+  return { otp: otp.slice(0, 4) + '-' + otp.slice(4), expires: fmtDate_(exp) };
 }
 
-function mustChange_(user) {
-  return !String(user.PasswordHash || '').trim() || truthy_(user.MustChange);
+/** 'ok' | 'expired' | 'bad' — ไม่สนตัวพิมพ์เล็ก/ใหญ่ ช่องว่าง และขีด */
+function checkOtp_(user, input) {
+  const h = str_(user.OtpHash).trim();
+  if (!h) return 'bad';
+  const clean = String(input || '').toUpperCase().replace(/[\s-]/g, '');
+  if (h !== hash_(user.EmployeeID, clean)) return 'bad';
+  const exp = user.OtpExpires instanceof Date ? user.OtpExpires.getTime() : 0;
+  return exp > Date.now() ? 'ok' : 'expired';
 }
 
 function hash_(code, pw) {
@@ -1410,6 +1625,7 @@ function homeData_(user) {
     isAdmin: isAdmin_(user.Rank),
     isSuper: isSuper_(user.Rank),
     pending: isAdmin_(user.Rank) ? table_(SH.RESULTS).rows.filter(needsReview_).length : 0,
+    applicantsWaiting: isAdmin_(user.Rank) ? applicants_().rows.filter(a => str_(a.Status) === APP_STATUS.PASS).length : 0,
     notices: noticesFor_(user.EmployeeID)
   };
 }
@@ -1575,9 +1791,10 @@ function setup() {
   };
 
   make(SH.USERS,
-    ['EmployeeID', 'Name', 'NameOC', 'AgeIC', 'Discord', 'Reason', 'Rank', 'CreatedAt', 'PasswordHash', 'MustChange'], [
-    // เริ่มต้นมีแค่ผู้พัฒนา (DEV001) — รหัสตั้งต้นเก็บใน Script Property; DEV001 เป็นคนสร้างผู้ใช้/สิทธิ์อื่น
-    ['DEV001', 'ผู้พัฒนาระบบ', '', '', '', '', SUPER_RANKS[0], new Date(), '', true]
+    ['EmployeeID', 'Name', 'NameOC', 'AgeIC', 'Discord', 'Reason', 'Rank', 'CreatedAt',
+     'OtpHash', 'OtpExpires', 'OtpBy', 'OtpCreatedAt', 'LastLoginAt'], [
+    // เริ่มต้นมีแค่ผู้พัฒนา (DEV001) — ขอรหัสครั้งเดียวจากเมนู "ระบบสอบ" ในไฟล์ Google Sheet
+    ['DEV001', 'ผู้พัฒนาระบบ', '', '', '', '', SUPER_RANKS[0], new Date(), '', '', '', '', '']
   ]);
 
   const examsCreated = make(SH.EXAMS,
@@ -1641,219 +1858,39 @@ function setup() {
   try { ensureImageFolder_(); } catch (e) { /* ยังไม่ได้อนุญาตสิทธิ์ Drive — รัน setup จากหน้า Apps Script เพื่ออนุญาต */ }
   make(SH.AUDIT, ['Timestamp', 'By', 'Action', 'Target', 'Detail'], []);
 
-  // ถ้ายังไม่มีผู้พัฒนาเลย สร้างบัญชี DEV001 ให้ (รหัสตั้งต้นอยู่ใน Script Property)
+  // ถ้ายังไม่มีผู้พัฒนาเลย สร้างบัญชี DEV001 ให้ (ขอรหัสครั้งเดียวได้จากเมนู "ระบบสอบ")
   const ut = table_(SH.USERS);
   if (!ut.rows.some(u => isSuper_(u.Rank)) && !ut.rows.some(u => norm_(u.EmployeeID) === 'DEV001')) {
-    appendObj_(ut, { EmployeeID: 'DEV001', Name: 'ผู้พัฒนาระบบ', Rank: SUPER_RANKS[0], CreatedAt: new Date(), PasswordHash: '', MustChange: true });
+    appendObj_(ut, { EmployeeID: 'DEV001', Name: 'ผู้พัฒนาระบบ', Rank: SUPER_RANKS[0], CreatedAt: new Date() });
+  }
+  // เปลี่ยนจากรหัสผ่านถาวรเป็นรหัสครั้งเดียว: ล้าง hash รหัสผ่านเดิมทิ้ง (ครั้งเดียว)
+  if (!props.getProperty('MIGRATED_OTP')) {
+    const t2 = table_(SH.USERS);
+    t2.rows.forEach(u => {
+      if (str_(u.PasswordHash) !== '') setCell_(t2, u, 'PasswordHash', '');
+      if (str_(u.MustChange) !== '') setCell_(t2, u, 'MustChange', '');
+    });
+    props.setProperty('MIGRATED_OTP', '1');
   }
 
   make(SH.ANSWERS, ['Timestamp', 'ResultID', 'EmployeeID', 'Name', 'QuestionID', 'Question', 'Answer', 'MaxPoints', 'AutoScore', 'Matched', 'Score'], []);
 
-  make(SH.ATTENDANCE, ['Date', 'EmployeeID', 'Name', 'ClockIn', 'ClockOut', 'RoundedIn', 'RoundedOut', 'BreakHours', 'NetHours', 'ClockInPhoto', 'ClockOutPhoto', 'UpdatedAt'], []);
-  make(SH.PAYCFG, ['Key', 'Value'], [
-    ['BreakIntervals', '12:00-13:00,17:00-18:00,22:00-23:00'], ['MinimumHoursPerDay', 3],
-    ['DailyMinimumEnabled', true], ['MinimumHoursPerWeek', 21], ['WeeklyMinimumEnabled', true],
-    ['OvertimeThresholdHours', 21], ['OvertimeBonusPercent', 10],
-    ['RoundMinutes', 30], ['Timezone', 'Asia/Bangkok']
-  ]);
-  const pct = table_(SH.PAYCFG), haveCfg = new Set(pct.rows.map(r => str_(r.Key)));
-  [['BreakIntervals','12:00-13:00,17:00-18:00,22:00-23:00'],['MinimumHoursPerDay',3],['DailyMinimumEnabled',true],
-    ['MinimumHoursPerWeek',21],['WeeklyMinimumEnabled',true],['OvertimeThresholdHours',21],['OvertimeBonusPercent',10],
-    ['RoundMinutes',30],['Timezone','Asia/Bangkok']].forEach(([k,v]) => { if (!haveCfg.has(k)) appendObj_(pct,{Key:k,Value:v}); });
-  make(SH.PAYRATES, ['EmployeeID', 'HourlyRate', 'UpdatedBy', 'UpdatedAt'], []);
+  // ผู้สมัครแยกไปชีต Applicants — ย้ายของเดิมที่อยู่ใน Users ออก (ครั้งเดียว)
+  make(SH.APPLICANTS, APP_HEADERS, []);
+  if (!props.getProperty('MIGRATED_APPLICANTS')) {
+    migrateApplicants_();
+    props.setProperty('MIGRATED_APPLICANTS', '1');
+  }
+
 
   const def = ss.getSheetByName('Sheet1') || ss.getSheetByName('ชีต1');
   if (def && def.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(def);
 }
 
-/* ---------- ลงเวลาและสรุปค่าจ้างรายสัปดาห์ ---------- */
-
-function payrollCfg_() {
-  const out = {};
-  table_(SH.PAYCFG).rows.forEach(r => out[String(r.Key)] = r.Value);
-  return out;
+/**
+ * Run once from the Apps Script editor to authorize UrlFetchApp for Discord webhooks.
+ * This harmless request sends no application or user data.
+ */
+function authorizeUrlFetch() {
+  return UrlFetchApp.fetch('https://www.google.com/generate_204', { muteHttpExceptions: true }).getResponseCode();
 }
-
-function payrollPunchDate_(ymd, hm) {
-  const d = String(ymd || ''), t = String(hm || '');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) throw new Error('กรุณาระบุวันที่และเวลาให้ถูกต้อง');
-  const tz = payrollCfg_().Timezone || 'Asia/Bangkok';
-  const dt = Utilities.parseDate(d + ' ' + t, tz, 'yyyy-MM-dd HH:mm');
-  if (Utilities.formatDate(dt, tz, 'yyyy-MM-dd HH:mm') !== d + ' ' + t) throw new Error('วันหรือเวลาไม่ถูกต้อง');
-  return dt;
-}
-
-function payrollRoundHour_(dt) {
-  const tz = payrollCfg_().Timezone || 'Asia/Bangkok';
-  const date = Utilities.formatDate(dt, tz, 'yyyy-MM-dd');
-  let hour = Number(Utilities.formatDate(dt, tz, 'HH'));
-  if (Number(Utilities.formatDate(dt, tz, 'mm')) >= 30) hour++;
-  if (hour >= 24) {
-    const last = Utilities.parseDate(date + ' 23:00', tz, 'yyyy-MM-dd HH:mm');
-    return new Date(last.getTime() + 3600000);
-  }
-  return Utilities.parseDate(date + ' ' + String(hour).padStart(2,'0') + ':00', tz, 'yyyy-MM-dd HH:mm');
-}
-
-function saveAttendancePhoto_(user, dataUrl, kind) {
-  const m = String(dataUrl || '').match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
-  if (!m || m[2].length > 8 * 1024 * 1024) throw new Error('กรุณาแนบรูปภาพ JPEG, PNG หรือ WebP ขนาดไม่เกิน 6 MB');
-  const blob = Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], norm_(user.EmployeeID) + '_' + kind + '_' + Date.now());
-  const file = ensureAttendanceFolder_().createFile(blob);
-  file.setDescription('หลักฐานลงเวลา ' + kind + ' · ' + safe_(user.Name) + ' (' + norm_(user.EmployeeID) + ')');
-  return file.getId();
-}
-
-function attendanceStatus(token) {
-  const tok = readToken_(token, ['auth']);
-  if (!tok) return { ok:false, expired:true, message:'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่' };
-  const user = findUser_(tok.code); if (!user || mustChange_(user)) return { ok:false, expired:true, message:'กรุณาเข้าสู่ระบบใหม่' };
-  const tz = payrollCfg_().Timezone || 'Asia/Bangkok', today = Utilities.formatDate(new Date(),tz,'yyyy-MM-dd');
-  const rows = table_(SH.ATTENDANCE).rows.filter(r => norm_(r.EmployeeID)===tok.code).sort((a,b)=>String(a.Date).localeCompare(String(b.Date)));
-  const open = rows.slice().reverse().find(r => r.ClockIn && !r.ClockOut);
-  return {ok:true,name:safe_(user.Name),employeeId:tok.code,today,open:!!open,openDate:open?str_(open.Date):'',clockIn:open&&open.ClockIn instanceof Date?Utilities.formatDate(open.ClockIn,tz,'HH:mm'):'',
-    todayRows:rows.filter(r=>str_(r.Date)===today).map(r=>({in:r.ClockIn instanceof Date?Utilities.formatDate(r.ClockIn,tz,'HH:mm'):'',out:r.ClockOut instanceof Date?Utilities.formatDate(r.ClockOut,tz,'HH:mm'):'',hours:Number(r.NetHours)||0}))};
-}
-
-function attendancePunch(token, kind, dataUrl) {
-  const tok = readToken_(token, ['auth']);
-  if (!tok) return { ok: false, expired: true, message: 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่' };
-  const user = findUser_(tok.code);
-  if (!user || mustChange_(user)) return { ok: false, expired: true, message: 'กรุณาเข้าสู่ระบบใหม่' };
-  if (['in', 'out'].indexOf(kind) < 0) return { ok: false, message: 'ประเภทลงเวลาไม่ถูกต้อง' };
-  try {
-    const tz = payrollCfg_().Timezone || 'Asia/Bangkok';
-    const dt = new Date(), date = Utilities.formatDate(dt,tz,'yyyy-MM-dd');
-    const rounded = payrollRoundHour_(dt);
-    const photoId = saveAttendancePhoto_(user,dataUrl,kind);
-    const lock = LockService.getScriptLock(); lock.waitLock(10000);
-    try {
-      const t = table_(SH.ATTENDANCE);
-      const row = t.rows.filter(r => norm_(r.EmployeeID)===tok.code).sort((a,b)=>String(b.Date).localeCompare(String(a.Date))).find(r=>r.ClockIn&&!r.ClockOut);
-      if (kind === 'in') {
-        if (row) return { ok: false, message: 'คุณมีเวรที่ยังไม่ได้ลงเวลาออก' };
-        appendObj_(t, { Date: date, EmployeeID: tok.code, Name: safe_(user.Name), ClockIn: dt, RoundedIn: rounded, ClockInPhoto:photoId, UpdatedAt: new Date() });
-      } else {
-        if (!row || !row.ClockIn) return { ok: false, message: 'ยังไม่มีเวรที่เปิดอยู่ กรุณาลงเวลาเข้าก่อน' };
-        if (dt.getTime() <= new Date(row.ClockIn).getTime()) return { ok: false, message: 'เวลาออกงานต้องอยู่หลังเวลาเข้างาน' };
-        const rin = new Date(row.RoundedIn || payrollRoundHour_(new Date(row.ClockIn)));
-        const rout = rounded;
-        if (rout.getTime() <= rin.getTime()) return { ok: false, message: 'เมื่อปัดเป็นรายชั่วโมงแล้ว ระยะเวลาทำงานต้องมากกว่า 0 ชั่วโมง' };
-        const cfg = payrollCfg_();
-        let breakMs = 0;
-        String(cfg.BreakIntervals || '').split(/[;,\n]/).map(x => x.trim()).filter(Boolean).forEach(x => {
-          const m = x.match(/^([01]\d|2[0-3]):[0-5]\d\s*-\s*([01]\d|2[0-3]):[0-5]\d$/);
-          if (!m) return;
-          const a = payrollPunchDate_(date, m[0].split('-')[0].trim());
-          const b = payrollPunchDate_(date, m[0].split('-')[1].trim());
-          if (b <= a) b.setTime(a.getTime() + 24 * 3600000);
-          breakMs += Math.max(0, Math.min(rout.getTime(), b.getTime()) - Math.max(rin.getTime(), a.getTime()));
-        });
-        const netHours = Math.max(0, (rout.getTime() - rin.getTime() - breakMs) / 3600000);
-        setCell_(t, row, 'ClockOut', dt); setCell_(t, row, 'RoundedOut', rout);
-        setCell_(t, row, 'ClockOutPhoto', photoId);
-        setCell_(t, row, 'BreakHours', breakMs / 3600000); setCell_(t, row, 'NetHours', netHours);
-        setCell_(t, row, 'UpdatedAt', new Date());
-      }
-      audit_(whoOf_(user), kind === 'in' ? 'ลงเวลาเข้า' : 'ลงเวลาออก', date, Utilities.formatDate(dt,tz,'HH:mm'));
-      return { ok: true, message: kind === 'in' ? 'บันทึกเวลาเข้าแล้ว' : 'บันทึกเวลาออกแล้ว' };
-    } finally { lock.releaseLock(); }
-  } catch (e) { return { ok: false, message: e.message || String(e) }; }
-}
-
-function payrollPeriod_(date) {
-  const tz = payrollCfg_().Timezone || 'Asia/Bangkok';
-  const d = payrollPunchDate_(date, '12:00');
-  const dow = Number(Utilities.formatDate(d, tz, 'u')); // Mon=1 ... Sun=7
-  const sinceSat = dow % 7;
-  const start = new Date(d.getTime()); start.setDate(start.getDate() - sinceSat);
-  const end = new Date(start.getTime()); end.setDate(end.getDate() + 6);
-  return { from: Utilities.formatDate(start, tz, 'yyyy-MM-dd'), to: Utilities.formatDate(end, tz, 'yyyy-MM-dd') };
-}
-
-function adminPayrollData(token, date) {
-  const adm = requireAdmin_(token); if (adm.err) return adm.err;
-  try {
-    const period = payrollPeriod_(date || Utilities.formatDate(new Date(), payrollCfg_().Timezone || 'Asia/Bangkok', 'yyyy-MM-dd'));
-    const cfg = payrollCfg_();
-    const valOr = (v,d) => v == null || String(v).trim() === '' || !isFinite(Number(v)) ? d : Number(v);
-    const minHours = Math.max(0, valOr(cfg.MinimumHoursPerDay,3));
-    const minWeek = Math.max(0, valOr(cfg.MinimumHoursPerWeek,21));
-    const dailyEnabled = cfg.DailyMinimumEnabled == null || String(cfg.DailyMinimumEnabled).trim() === '' ? true : truthy_(cfg.DailyMinimumEnabled);
-    const weeklyEnabled = cfg.WeeklyMinimumEnabled == null || String(cfg.WeeklyMinimumEnabled).trim() === '' ? true : truthy_(cfg.WeeklyMinimumEnabled);
-    const overtimeThreshold = Math.max(0, valOr(cfg.OvertimeThresholdHours,21));
-    const overtimePercent = Math.max(0, valOr(cfg.OvertimeBonusPercent,10));
-    const rates = {};
-    table_(SH.PAYRATES).rows.forEach(r => rates[norm_(r.EmployeeID)] = Number(r.HourlyRate) || 0);
-    const tz = cfg.Timezone || 'Asia/Bangkok';
-    const items = table_(SH.ATTENDANCE).rows.filter(r => {
-      const d = r.Date instanceof Date ? Utilities.formatDate(r.Date, tz, 'yyyy-MM-dd') : str_(r.Date);
-      return d >= period.from && d <= period.to;
-    }).map(r => {
-      const dateKey = r.Date instanceof Date ? Utilities.formatDate(r.Date, tz, 'yyyy-MM-dd') : str_(r.Date);
-      const hours = Number(r.NetHours) || 0, rate = Number(rates[norm_(r.EmployeeID)]) || 0;
-      const complete = !!r.ClockOut;
-      const eligible = complete && (!dailyEnabled || hours >= minHours);
-      const fmt = v => v instanceof Date ? Utilities.formatDate(v, tz, 'HH:mm') : '';
-      return { date: dateKey, employeeId: str_(r.EmployeeID), name: str_(r.Name), clockIn: fmt(r.ClockIn), clockOut: fmt(r.ClockOut),
-        roundedIn: fmt(r.RoundedIn), roundedOut: fmt(r.RoundedOut), breakHours: Number(r.BreakHours) || 0,
-        hours, hourlyRate: rate, complete, eligible, payableHours: eligible ? hours : 0, basePay: eligible ? hours * rate : 0, pay: 0 };
-    }).sort((a,b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
-    const byPerson = {};
-    items.forEach(x => {
-      const g = byPerson[x.employeeId] || (byPerson[x.employeeId] = { employeeId:x.employeeId, name:x.name, rate:x.hourlyRate, days:0, hours:0, basePay:0 });
-      if (x.eligible) { g.days++; g.hours += x.payableHours; g.basePay += x.basePay; }
-    });
-    const people = Object.keys(byPerson).map(id => {
-      const g = byPerson[id];
-      g.weeklyEligible = !weeklyEnabled || g.hours >= minWeek;
-      g.basePayBeforeWeeklyMinimum = g.basePay;
-      g.basePay = g.weeklyEligible ? g.basePayBeforeWeeklyMinimum : 0;
-      g.bonusPercent = g.weeklyEligible && g.hours > overtimeThreshold ? overtimePercent : 0;
-      g.bonus = g.weeklyEligible ? g.basePay * g.bonusPercent / 100 : 0;
-      g.totalPay = g.weeklyEligible ? g.basePay + g.bonus : 0;
-      items.filter(x => x.employeeId === id).forEach(x => { x.weeklyEligible = g.weeklyEligible; x.pay = g.weeklyEligible ? x.basePay : 0; });
-      return g;
-    }).sort((a,b) => a.name.localeCompare(b.name));
-    const users = table_(SH.USERS).rows.filter(u => norm_(u.EmployeeID) !== 'DEV001').map(u => ({
-      employeeId: str_(u.EmployeeID), name: str_(u.Name), rank: str_(u.Rank), hourlyRate: Number(rates[norm_(u.EmployeeID)]) || 0
-    }));
-    return { ok: true, period, minHours, dailyEnabled, minWeek, weeklyEnabled, overtimeThreshold, overtimePercent,
-      breaks: str_(cfg.BreakIntervals), items, people, users };
-  } catch (e) { return { ok: false, message: e.message || String(e) }; }
-}
-
-function adminSavePayroll(token, config, rates) {
-  const adm = requireAdmin_(token); if (adm.err) return adm.err;
-  config = config || {}; rates = rates || [];
-  const min = Number(config.minimumHours);
-  if (!isFinite(min) || min < 0 || min > 24) return { ok: false, message: 'ชั่วโมงขั้นต่ำต้องอยู่ระหว่าง 0 ถึง 24' };
-  const minWeek = Number(config.minimumHoursPerWeek), overtimeThreshold = Number(config.overtimeThreshold), overtimePercent = Number(config.overtimePercent);
-  if (!isFinite(minWeek) || minWeek < 0 || minWeek > 168) return { ok:false, message:'ชั่วโมงขั้นต่ำต่อสัปดาห์ต้องอยู่ระหว่าง 0 ถึง 168' };
-  if (!isFinite(overtimeThreshold) || overtimeThreshold < 0 || overtimeThreshold > 168) return { ok:false, message:'เกณฑ์โบนัสต้องอยู่ระหว่าง 0 ถึง 168 ชั่วโมง' };
-  if (!isFinite(overtimePercent) || overtimePercent < 0 || overtimePercent > 1000) return { ok:false, message:'เปอร์เซ็นต์โบนัสต้องอยู่ระหว่าง 0 ถึง 1000' };
-  const breaks = String(config.breaks || '').trim();
-  const parts = breaks ? breaks.split(/[;,\n]/).map(x => x.trim()).filter(Boolean) : [];
-  if (parts.some(x => !/^([01]\d|2[0-3]):[0-5]\d\s*-\s*([01]\d|2[0-3]):[0-5]\d$/.test(x))) return { ok: false, message: 'รูปแบบเวลาพักไม่ถูกต้อง ใช้ HH:mm-HH:mm คั่นแต่ละช่วงด้วย , เช่น 12:00-13:00,17:00-18:00' };
-  const lock = LockService.getScriptLock(); lock.waitLock(10000);
-  try {
-    const cfg = table_(SH.PAYCFG);
-    [['BreakIntervals', parts.join(',')], ['MinimumHoursPerDay', min], ['DailyMinimumEnabled', !!config.dailyMinimumEnabled],
-      ['MinimumHoursPerWeek', minWeek], ['WeeklyMinimumEnabled', !!config.weeklyMinimumEnabled],
-      ['OvertimeThresholdHours', overtimeThreshold], ['OvertimeBonusPercent', overtimePercent]].forEach(([k,v]) => {
-      const row = cfg.rows.find(r => str_(r.Key) === k);
-      if (row) setCell_(cfg, row, 'Value', v); else appendObj_(cfg, { Key:k, Value:v });
-    });
-    const t = table_(SH.PAYRATES);
-    (Array.isArray(rates) ? rates : []).forEach(x => {
-      const id = norm_(x.employeeId), rate = Number(x.hourlyRate);
-      if (!id || !isFinite(rate) || rate < 0) return;
-      const row = t.rows.find(r => norm_(r.EmployeeID) === id);
-      if (row) { setCell_(t,row,'HourlyRate',rate); setCell_(t,row,'UpdatedBy',whoOf_(adm.user)); setCell_(t,row,'UpdatedAt',new Date()); }
-      else appendObj_(t,{ EmployeeID:id, HourlyRate:rate, UpdatedBy:whoOf_(adm.user), UpdatedAt:new Date() });
-    });
-    audit_(whoOf_(adm.user),'แก้ไขตั้งค่าเงินเดือน','', 'ขั้นต่ำ '+min+' ชม./วัน, '+minWeek+' ชม./สัปดาห์ · โบนัส >'+overtimeThreshold+' ชม. '+overtimePercent+'% · พัก '+parts.join(','));
-    return { ok:true };
-  } finally { lock.releaseLock(); }
-}
-
