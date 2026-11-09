@@ -153,12 +153,12 @@
   <section class="view" id="view-login">
     <div class="card">
       <h2>เข้าสู่ระบบ</h2>
-      <p class="sub">กรอกรหัสพนักงาน และ<b>รหัสผ่านครั้งเดียว</b>ที่ได้รับจากผู้ดูแล (ADMIN / ผู้พัฒนา) · รหัสใช้เข้าสู่ระบบได้ 1 ครั้ง</p>
+      <p class="sub"><b>บุคลากร:</b> ใช้รหัสผ่านครั้งเดียวที่ได้รับจากผู้ดูแล (ใช้ได้ 1 ครั้ง)<br><b>ADMIN / ผู้พัฒนา:</b> ใช้รหัสผ่านของตัวเอง</p>
       <form id="f-login">
         <label for="code">รหัสพนักงาน</label>
         <input type="text" id="code" autocomplete="username" placeholder="เช่น D001 หรือ APP123456" required>
-        <label for="pw">รหัสผ่านครั้งเดียว</label>
-        <input type="password" id="pw" autocomplete="one-time-code" placeholder="เช่น ABCD-2345" autocapitalize="characters" spellcheck="false" required>
+        <label for="pw">รหัสผ่าน</label>
+        <input type="password" id="pw" autocomplete="current-password" placeholder="รหัสผ่าน หรือ รหัสครั้งเดียว เช่น ABCD-2345" autocapitalize="off" spellcheck="false" required>
         <label class="chk"><input type="checkbox" data-toggle="pw"> แสดงรหัสผ่าน</label>
         <button class="btn block" id="b-login">เข้าสู่ระบบ</button>
       </form>
@@ -202,6 +202,40 @@
     </div>
   </section>
 
+  <!-- เปลี่ยนรหัสผ่าน -->
+  <section class="view" id="view-change" hidden>
+    <div class="card">
+      <h2 id="c-title">ตั้งรหัสผ่านใหม่</h2>
+      <div id="c-forced" class="msg warn" style="margin:0 0 6px">กรุณาตั้งรหัสผ่านใหม่ก่อนใช้งาน</div>
+      <p class="hint" style="margin:0 0 4px">รหัสผ่านนี้ใช้เฉพาะ ADMIN / ผู้พัฒนา — ใช้เข้าสู่ระบบครั้งต่อไปแทนรหัสผ่านครั้งเดียว</p>
+      <form id="f-change" autocomplete="off">
+        <div id="c-cur-wrap">
+          <label for="c-cur">รหัสผ่านปัจจุบัน</label>
+          <input type="password" id="c-cur" autocomplete="current-password">
+        </div>
+        <label for="c-new">รหัสผ่านใหม่</label>
+        <input type="password" id="c-new" autocomplete="new-password" maxlength="10">
+        <label for="c-new2">ยืนยันรหัสผ่านใหม่</label>
+        <input type="password" id="c-new2" autocomplete="new-password" maxlength="10">
+        <label class="chk"><input type="checkbox" data-toggle="c-cur,c-new,c-new2"> แสดงรหัสผ่าน</label>
+        <ul class="rules" id="c-rules">
+          <li data-r="len">ความยาว 6–10 ตัว</li>
+          <li data-r="num">มีตัวเลข (0–9)</li>
+          <li data-r="lower">มีตัวอักษรภาษาอังกฤษตัวเล็ก (a–z)</li>
+          <li data-r="upper">มีตัวอักษรภาษาอังกฤษตัวใหญ่ (A–Z)</li>
+          <li data-r="special">มีอักขระพิเศษ เช่น ! @ # $ % &amp; *</li>
+          <li data-r="ascii">ไม่มีช่องว่างหรืออักษรภาษาไทย</li>
+          <li data-r="match">รหัสผ่านทั้งสองช่องตรงกัน</li>
+        </ul>
+        <div class="row">
+          <button type="button" class="btn ghost" id="b-cancel">ยกเลิก</button>
+          <button class="btn" id="b-change" disabled>บันทึกรหัสผ่าน</button>
+        </div>
+      </form>
+      <div id="m-change"></div>
+    </div>
+  </section>
+
   <!-- หน้าหลัก -->
   <section class="view" id="view-home" hidden>
     <div id="m-top"></div>
@@ -237,6 +271,7 @@
       </div>
     </div>
     <div class="row">
+      <button class="btn ghost" id="b-mypw" onclick="openChange(false)" hidden>เปลี่ยนรหัสผ่าน</button>
       <button class="btn ghost" onclick="logout()">ออกจากระบบ</button>
     </div>
   </section>
@@ -520,7 +555,9 @@
     <div class="card">
       <input type="text" id="us-q" placeholder="ค้นหารหัส ชื่อ หรือยศ">
       <p class="sub" id="us-sum" style="margin:10px 0 0"></p>
-      <p class="hint" style="margin:6px 0 0">หน้านี้แสดงเฉพาะบุคลากร (ชีต Users) · ผู้สมัครอยู่ที่หน้า "ผู้สมัคร" · เข้าสู่ระบบด้วย<b>รหัสผ่านครั้งเดียว</b>ที่กด "สร้างรหัสผ่าน" — 1 รหัส เข้าได้ 1 ครั้ง</p>
+      <p class="hint" style="margin:6px 0 0">หน้านี้แสดงเฉพาะบุคลากร (ชีต Users) · ผู้สมัครอยู่ที่หน้า "ผู้สมัคร"<br>
+        บุคลากรทั่วไปเข้าสู่ระบบด้วย<b>รหัสผ่านครั้งเดียว</b>ที่กด "สร้างรหัสผ่าน" (1 รหัส เข้าได้ 1 ครั้ง) ·
+        ADMIN / ผู้พัฒนาใช้<b>รหัสผ่านของตัวเอง</b> — กด "รีเซ็ตรหัสผ่าน" เพื่อสร้างรหัสชั่วคราวสำหรับเข้าครั้งแรกหรือลืมรหัส</p>
       <button class="btn block" onclick="openUEdit(null)">+ เพิ่มผู้ใช้</button>
     </div>
     <div class="ulist" id="us-list"></div>
@@ -657,7 +694,7 @@
 <div id="lightbox" class="fit" hidden><div class="lb-tip">แตะรูปเพื่อขยาย/ย่อ · แตะนอกรูปหรือกด Esc เพื่อปิด</div><img id="lb-img" alt="รูปประกอบ"></div>
 
 <script>
-const S = { token:null, tokenType:null, regCode:null, data:null,
+const S = { token:null, tokenType:null, regCode:null, forced:false, data:null,
             examToken:null, qs:[], ans:{}, timer:null, end:0, inExam:false };
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -671,7 +708,7 @@ function show(v, isBack){
   if (!isBack && v !== NAV.cur) {
     const i = NAV.stack.lastIndexOf(v);
     if (i !== -1) NAV.stack = NAV.stack.slice(0, i);          // กลับไปหน้าที่เคยผ่าน = ตัดประวัติหลังจากนั้นทิ้ง
-    else if (!NO_RETURN.includes(NAV.cur) && NAV.cur !== 'otp' &&
+    else if (!NO_RETURN.includes(NAV.cur) && NAV.cur !== 'otp' && !(NAV.cur === 'change' && S.forced) &&
              !(v === 'otp' && ['accept', 'uedit'].includes(NAV.cur))) NAV.stack.push(NAV.cur);   // ฟอร์มที่บันทึกแล้ว ไม่ย้อนกลับไปอีก
   }
   if (v === 'home' || v === 'login') NAV.stack = [];
@@ -682,7 +719,7 @@ function show(v, isBack){
 }
 
 function updateBackBtn(){
-  const hide = !NAV.stack.length || NO_BACK_BTN.includes(NAV.cur);
+  const hide = !NAV.stack.length || NO_BACK_BTN.includes(NAV.cur) || (NAV.cur === 'change' && S.forced);
   $('b-nav-back').hidden = hide;
 }
 
@@ -722,8 +759,9 @@ $('f-login').addEventListener('submit', async e => {
     if (!r.ok) return msg('m-login', r.message);
     try { localStorage.setItem('lastCode', $('code').value.trim()); } catch(_){}
     $('pw').value = '';
-    S.token = r.token; S.regCode = null; S.tokenType = 'auth'; S.data = r;
-    renderHome();
+    S.token = r.token; S.regCode = null;
+    if (r.mustChange) { S.tokenType = 'change'; $('who').textContent = r.name; openChange(true); }
+    else { S.tokenType = 'auth'; S.data = r; renderHome(); }
   } catch(err){ msg('m-login', err.message || err); }
   finally { busy(b, false); }
 });
@@ -749,6 +787,58 @@ $('f-reg').addEventListener('submit', async e => {
     if (!ok) msg('m-reg', 'สมัครสำเร็จ (รหัส ' + r.code + ') แต่เปิดข้อสอบไม่ได้ — กรุณาติดต่อผู้ดูแลระบบ');
   } catch(err){ msg('m-reg', err.message || err); }
   finally { busy(b, false); }
+});
+
+/* ----- เปลี่ยนรหัสผ่าน ----- */
+const RULES = {
+  len:     p => p.length >= 6 && p.length <= 10,
+  num:     p => /\d/.test(p),
+  lower:   p => /[a-z]/.test(p),
+  upper:   p => /[A-Z]/.test(p),
+  special: p => /[!-\/:-@\[-`{-~]/.test(p),
+  ascii:   p => p.length > 0 && !/[^!-~]/.test(p)
+};
+function checkRules(){
+  const p = $('c-new').value, p2 = $('c-new2').value;
+  let all = true;
+  $('c-rules').querySelectorAll('li').forEach(li => {
+    const r = li.dataset.r;
+    const ok = r === 'match' ? (p.length > 0 && p === p2) : RULES[r](p);
+    li.classList.toggle('ok', ok);
+    if (!ok) all = false;
+  });
+  if (!S.forced && !$('c-cur').value) all = false;
+  $('b-change').disabled = !all;
+}
+['c-cur','c-new','c-new2'].forEach(id => $(id).addEventListener('input', checkRules));
+
+function openChange(forced, note){
+  S.forced = forced;
+  $('f-change').reset();
+  ['c-cur','c-new','c-new2'].forEach(id => $(id).type = 'password');
+  $('c-forced').hidden = !forced;
+  $('c-forced').textContent = note || 'คุณเข้าสู่ระบบด้วยรหัสผ่านครั้งเดียว — ตั้งรหัสผ่านของตัวเองก่อนใช้งาน';
+  $('c-cur-wrap').hidden = forced;
+  $('c-title').textContent = forced ? 'ตั้งรหัสผ่านใหม่' : 'เปลี่ยนรหัสผ่าน';
+  msg('m-change',''); checkRules(); show('change');
+  (forced ? $('c-new') : $('c-cur')).focus();
+}
+
+$('b-cancel').addEventListener('click', () => { if (S.forced) logout(); else show('home'); });
+
+$('f-change').addEventListener('submit', async e => {
+  e.preventDefault(); msg('m-change','');
+  const b = $('b-change'); busy(b, true, 'กำลังบันทึก…');
+  try {
+    const r = await call('changePassword', S.token, $('c-new').value, $('c-cur').value);
+    if (expired(r)) return;
+    if (!r.ok) { busy(b, false); return msg('m-change', r.message); }
+    S.token = r.token; S.tokenType = 'auth'; S.data = r;
+    const forced = S.forced; S.forced = false;
+    renderHome();
+    msg('m-top', forced ? 'ตั้งรหัสผ่านเรียบร้อยแล้ว — ครั้งต่อไปเข้าสู่ระบบด้วยรหัสผ่านนี้' : 'เปลี่ยนรหัสผ่านเรียบร้อยแล้ว', 'ok');
+  } catch(err){ msg('m-change', err.message || err); }
+  finally { busy(b, false); checkRules(); }
 });
 
 /* ----- หน้าหลัก ----- */
@@ -784,6 +874,7 @@ function renderHome(){
   $('h-hist-card').hidden = !history.length;
   $('h-admin').hidden = !S.data.isAdmin;
   $('h-admin-title').textContent = S.data.isSuper ? 'เมนูผู้พัฒนา (Super Admin)' : 'เมนูผู้บริหาร';
+  $('b-mypw').hidden = !S.data.ownPassword;
   renderNotices(S.data.notices);
   startNoticeWatch();
   $('h-pending').innerHTML = S.data.pending ? '<span class="pill">' + S.data.pending + '</span>' : '';
@@ -795,7 +886,7 @@ function renderHome(){
 function logout(){
   ADM.sets = []; ADM.qs = []; ADM.pending = []; SUP.data = null;
   stopResultWatch(); clearInterval(S.noticeTimer);
-  S.token = null; S.tokenType = null; S.regCode = null; S.data = null; S.inExam = false; clearInterval(S.timer);
+  S.token = null; S.tokenType = null; S.regCode = null; S.forced = false; S.data = null; S.inExam = false; clearInterval(S.timer);
   $('who').textContent = ''; $('pw').value = ''; msg('m-login',''); show('login');
 }
 
@@ -1341,10 +1432,11 @@ function renderUsers(){
     '<div><span class="rank">' + esc(u.rank || '—') + '</span>' + lvBadge(u.level) + '</div>' +
     (u.discord ? '<div class="hint" style="margin-top:4px">Discord UID: ' + esc(discordUid(u.discord)) + '</div>' : '') +
     '<div class="hint" style="margin-top:4px">' +
-      (u.otpActive ? '🔑 มีรหัสครั้งเดียวที่ยังไม่ได้ใช้ · หมดอายุ ' + esc(u.otpExpires) : 'ไม่มีรหัสที่ใช้ได้') +
+      (u.usesPassword ? (u.hasPassword ? '🔐 ใช้รหัสผ่านของตัวเอง' : '⚠ ยังไม่ได้ตั้งรหัสผ่าน — สร้างรหัสชั่วคราวให้เพื่อเข้าครั้งแรก') + ' · ' : '') +
+      (u.otpActive ? '🔑 มีรหัสครั้งเดียวที่ยังไม่ได้ใช้ · หมดอายุ ' + esc(u.otpExpires) : (u.usesPassword ? 'ไม่มีรหัสชั่วคราว' : 'ไม่มีรหัสที่ใช้ได้')) +
       (u.lastLogin ? ' · เข้าสู่ระบบล่าสุด ' + esc(u.lastLogin) : '') + (u.createdAt ? ' · สร้างเมื่อ ' + esc(u.createdAt) : '') + '</div>' +
     (u.manageable
-      ? '<div class="acts"><button class="btn sm" data-uotp="' + esc(u.id) + '">สร้างรหัสผ่าน</button>' +
+      ? '<div class="acts"><button class="btn sm" data-uotp="' + esc(u.id) + '">' + (u.usesPassword ? 'รีเซ็ตรหัสผ่าน' : 'สร้างรหัสผ่าน') + '</button>' +
           (u.otpActive ? '<button class="btn ghost sm" data-urevoke="' + esc(u.id) + '">ยกเลิกรหัส</button>' : '') +
           '<button class="btn ghost sm" data-uedit="' + esc(u.id) + '">แก้ไข</button>' +
           (u.id.toUpperCase() === SUP.data.me.toUpperCase() ? '' : '<button class="btn danger sm" data-udel="' + esc(u.id) + '">ลบ</button>') + '</div>'
@@ -1853,7 +1945,10 @@ function openOtp(id){
   $('otp-who').innerHTML = '<b>' + esc(u.name) + '</b> · ' + esc(u.id) + ' · ' + esc(u.rank || '—');
   $('otp-hours').innerHTML = SUP.data.otpHours.map(h => '<option value="' + h + '"' + (h === SUP.data.defaultOtpHours ? ' selected' : '') + '>' +
     (h < 24 ? h + ' ชั่วโมง' : (h / 24) + ' วัน') + '</option>').join('');
-  $('otp-note').textContent = u.otpActive ? '⚠ ผู้ใช้นี้มีรหัสที่ยังไม่ได้ใช้ (หมดอายุ ' + u.otpExpires + ') — สร้างใหม่แล้วรหัสเดิมจะใช้ไม่ได้' : 'รหัสใช้เข้าสู่ระบบได้ 1 ครั้ง และหมดอายุตามเวลาที่เลือก';
+  $('otp-note').textContent = (u.usesPassword
+      ? 'บัญชีนี้เป็น ADMIN/ผู้พัฒนา: รหัสนี้เป็นรหัสชั่วคราว ใช้เข้า 1 ครั้งแล้วระบบจะบังคับตั้งรหัสผ่านของตัวเอง (รหัสผ่านเดิมจะใช้ไม่ได้หลังใช้รหัสนี้) · '
+      : 'รหัสใช้เข้าสู่ระบบได้ 1 ครั้ง และหมดอายุตามเวลาที่เลือก · ') +
+    (u.otpActive ? '⚠ มีรหัสที่ยังไม่ได้ใช้ (หมดอายุ ' + u.otpExpires + ') — สร้างใหม่แล้วรหัสเดิมจะใช้ไม่ได้' : '');
   $('otp-form').hidden = false; $('otp-result').hidden = true; $('otp-code').textContent = ''; $('otp-text').value = '';
   msg('m-otp', ''); show('otp');
 }
@@ -1868,7 +1963,8 @@ $('b-otp-gen').addEventListener('click', async () => {
     $('otp-code').textContent = r.otp;
     $('otp-exp').textContent = 'หมดอายุ ' + r.expires + ' · ใช้ได้ 1 ครั้ง';
     $('otp-text').value = 'ระบบสอบแพทย์ — ข้อมูลเข้าสู่ระบบ\nรหัสพนักงาน: ' + r.id + '\nรหัสผ่านครั้งเดียว: ' + r.otp +
-      '\nหมดอายุ: ' + r.expires + '\n(ใช้เข้าสู่ระบบได้ 1 ครั้ง ห้ามส่งต่อให้ผู้อื่น)' + (r.url ? '\nลิงก์: ' + r.url : '');
+      '\nหมดอายุ: ' + r.expires + (r.forManager ? '\n(รหัสชั่วคราว ใช้เข้า 1 ครั้ง แล้วระบบจะให้ตั้งรหัสผ่านของตัวเอง ห้ามส่งต่อให้ผู้อื่น)'
+        : '\n(ใช้เข้าสู่ระบบได้ 1 ครั้ง ห้ามส่งต่อให้ผู้อื่น)') + (r.url ? '\nลิงก์: ' + r.url : '');
     loadSuper().catch(() => {});
   } catch(err){ msg('m-otp', err.message || err); }
   finally { busy(b, false); }

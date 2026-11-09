@@ -20,10 +20,12 @@
  *   ผู้ใช้ทั่วไป       : ทำข้อสอบตามยศ
  *   ทุกการกระทำของผู้บริหารและผู้พัฒนาจะถูกบันทึกในชีต AuditLog
  *
- * รหัสผ่าน (ไม่มีการตั้งรหัสผ่านเอง):
- *   - ADMIN / SUPER กด "สร้างรหัสผ่านครั้งเดียว" ให้ผู้ใช้ในหน้า "จัดการผู้ใช้"
- *   - รหัสใช้เข้าสู่ระบบได้ 1 ครั้ง และหมดอายุตามเวลาที่เลือก (เก็บแบบ hash ในชีต Users)
- *   - ผู้พัฒนาคนแรก (DEV001): เปิดไฟล์ Google Sheet → เมนู "ระบบสอบ" → "สร้างรหัสผ่านครั้งเดียวให้ DEV001"
+ * รหัสผ่าน:
+ *   - ADMIN / SUPER : ใช้รหัสผ่านของตัวเอง (6–10 ตัว มีตัวเลข a-z A-Z และอักขระพิเศษ) เปลี่ยนเองได้ในหน้าหลัก
+ *                     เข้าครั้งแรก/ลืมรหัส → ใช้รหัสผ่านครั้งเดียวที่ ADMIN/SUPER สร้างให้ แล้วระบบบังคับตั้งรหัสใหม่
+ *   - ยศอื่นทั้งหมด  : ใช้รหัสผ่านครั้งเดียวที่ ADMIN / SUPER สร้างให้เท่านั้น (ใช้ได้ 1 ครั้ง มีวันหมดอายุ)
+ *   - เก็บเฉพาะ hash ในชีต Users (PasswordHash = รหัสของผู้บริหาร, OtpHash = รหัสครั้งเดียว)
+ *   - ผู้พัฒนาคนแรก / กู้คืน DEV001: เปิดไฟล์ Google Sheet → เมนู "ระบบสอบ" → "สร้างรหัสผ่านครั้งเดียวให้ DEV001"
  */
 
 const SH = { USERS: 'Users', EXAMS: 'Exams', QUESTIONS: 'Questions', RESULTS: 'Results', ANSWERS: 'Answers',
@@ -43,6 +45,7 @@ const SUPER_RANKS = ['ผู้พัฒนา'];                   // Super Adm
 const ADMIN_RANKS = [];   // ไม่มียศ ADMIN เริ่มต้น — DEV001 เป็นคนให้สิทธิ์เองในหน้าเว็บ
 const DEFAULT_TIME_MIN = 60;    // เวลาสอบเมื่อไม่ได้ตั้งในชีต Exams (นาที)
 
+const PW_RULE = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!-\/:-@\[-`{-~])[!-~]{6,10}$/;
 const OTP_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // ตัด 0/O/1/I ออก กันอ่านสลับ
 const OTP_LENGTH = 8;
 const OTP_HOURS = [1, 6, 12, 24, 48, 72];                      // อายุรหัสที่เลือกได้ (ชั่วโมง)
@@ -77,30 +80,89 @@ function login(code, password) {
     return { ok: false, message: 'กรอกรหัสผ่านผิดเกิน ' + MAX_FAILS + ' ครั้ง กรุณารอ 5 นาทีแล้วลองใหม่' };
   }
 
-  // ล็อกระหว่างตรวจและล้างรหัส กันการใช้รหัสเดียวกันเข้าพร้อมกัน 2 ที่
+  // ล็อกระหว่างตรวจและล้างรหัส กันการใช้รหัสครั้งเดียวเดียวกันเข้าพร้อมกัน 2 ที่
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  let user, how;
+  try {
+    const users = table_(SH.USERS);
+    user = users.rows.find(r => norm_(r.EmployeeID) === c);
+    const manager = !!user && actorLevel_(user) >= 1;           // ADMIN / SUPER
+    if (manager && hasOwnPassword_(user) && str_(user.PasswordHash) === hash_(user.EmployeeID, password)) {
+      how = 'password';                                          // รหัสผ่านของตัวเอง
+    } else {
+      const otp = user ? checkOtp_(user, password) : 'bad';
+      if (otp !== 'ok') {
+        cache.put('fail_' + c, String(fails + 1), LOCK_SECONDS);
+        return { ok: false, message: otp === 'expired'
+          ? 'รหัสผ่านครั้งเดียวนี้หมดอายุแล้ว — ขอรหัสใหม่จากผู้ดูแล'
+          : 'รหัสพนักงานหรือรหัสผ่านไม่ถูกต้อง' + (manager ? '' : ' (รหัสผ่านครั้งเดียวใช้ได้ 1 ครั้ง ถ้าเคยใช้แล้วให้ขอรหัสใหม่จากผู้ดูแล)') };
+      }
+      // ใช้ได้ครั้งเดียว: ล้างรหัสทันทีที่เข้าสู่ระบบสำเร็จ
+      setCell_(users, user, 'OtpHash', '');
+      setCell_(users, user, 'OtpExpires', '');
+      if (manager) setCell_(users, user, 'PasswordHash', '');   // ผู้บริหารใช้รหัสชั่วคราว = รีเซ็ต ต้องตั้งรหัสใหม่
+      how = manager ? 'otp-reset' : 'otp';
+    }
+    cache.remove('fail_' + c);
+    setCell_(users, user, 'LastLoginAt', new Date());
+  } finally {
+    lock.releaseLock();
+  }
+  audit_(whoOf_(user), how === 'password' ? 'เข้าสู่ระบบด้วยรหัสผ่าน' : 'เข้าสู่ระบบด้วยรหัสครั้งเดียว', str_(user.EmployeeID),
+    how === 'password' ? '' : 'สร้างโดย ' + str_(user.OtpBy) + (how === 'otp-reset' ? ' · ต้องตั้งรหัสผ่านใหม่' : ''));
+  if (how === 'otp-reset') {
+    return { ok: true, mustChange: true, token: issueToken_(c, 'change'), name: str_(user.Name) };
+  }
+  return Object.assign({ ok: true, token: issueToken_(c, 'auth') }, homeData_(user));
+}
+
+/**
+ * ตั้ง/เปลี่ยนรหัสผ่านของตัวเอง — เฉพาะ ADMIN / SUPER
+ * token ชนิด change (เพิ่งเข้าด้วยรหัสครั้งเดียว) ไม่ต้องกรอกรหัสเดิม · token ชนิด auth ต้องกรอกรหัสปัจจุบัน
+ */
+function changePassword(token, newPassword, currentPassword) {
+  const tok = readToken_(token, ['auth', 'change']);
+  if (!tok) return { ok: false, expired: true, message: 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่' };
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   let user;
   try {
     const users = table_(SH.USERS);
-    user = users.rows.find(r => norm_(r.EmployeeID) === c);
-    const otp = user ? checkOtp_(user, password) : 'bad';
-    if (otp !== 'ok') {
-      cache.put('fail_' + c, String(fails + 1), LOCK_SECONDS);
-      return { ok: false, message: otp === 'expired'
-        ? 'รหัสผ่านครั้งเดียวนี้หมดอายุแล้ว — ขอรหัสใหม่จากผู้ดูแล'
-        : 'รหัสพนักงานหรือรหัสผ่านไม่ถูกต้อง (รหัสผ่านใช้ได้ครั้งเดียว ถ้าเคยใช้แล้วให้ขอรหัสใหม่จากผู้ดูแล)' };
+    user = users.rows.find(r => norm_(r.EmployeeID) === tok.code);
+    if (!user) return { ok: false, expired: true, message: 'ไม่พบผู้ใช้' };
+    if (actorLevel_(user) < 1) return { ok: false, message: 'ยศของคุณใช้รหัสผ่านครั้งเดียวจากผู้ดูแล ไม่ต้องตั้งรหัสผ่านเอง' };
+    if (tok.type === 'auth' && str_(user.PasswordHash) !== hash_(user.EmployeeID, currentPassword)) {
+      return { ok: false, message: 'รหัสผ่านปัจจุบันไม่ถูกต้อง' };
     }
-    cache.remove('fail_' + c);
-    // ใช้ได้ครั้งเดียว: ล้างรหัสทันทีที่เข้าสู่ระบบสำเร็จ
-    setCell_(users, user, 'OtpHash', '');
-    setCell_(users, user, 'OtpExpires', '');
-    setCell_(users, user, 'LastLoginAt', new Date());
+    const err = validatePassword_(newPassword);
+    if (err) return { ok: false, message: err };
+    const h = hash_(user.EmployeeID, newPassword);
+    if (h === str_(user.PasswordHash)) return { ok: false, message: 'รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสผ่านเดิม' };
+    setCell_(users, user, 'PasswordHash', h);
+    setCell_(users, user, 'PasswordSetAt', new Date());
+    user.PasswordHash = h;
   } finally {
     lock.releaseLock();
   }
-  audit_(whoOf_(user), 'เข้าสู่ระบบด้วยรหัสครั้งเดียว', str_(user.EmployeeID), 'สร้างโดย ' + str_(user.OtpBy));
-  return Object.assign({ ok: true, token: issueToken_(c, 'auth') }, homeData_(user));
+  CacheService.getScriptCache().remove('tok_' + token);
+  audit_(whoOf_(user), tok.type === 'change' ? 'ตั้งรหัสผ่านใหม่ (หลังรหัสครั้งเดียว)' : 'เปลี่ยนรหัสผ่าน', str_(user.EmployeeID), '');
+  return Object.assign({ ok: true, token: issueToken_(tok.code, 'auth') }, homeData_(user));
+}
+
+function hasOwnPassword_(user) { return /^sha256\$/.test(str_(user.PasswordHash).trim()); }
+
+function validatePassword_(pw) {
+  pw = String(pw || '');
+  const miss = [];
+  if (pw.length < 6 || pw.length > 10) miss.push('ความยาว 6–10 ตัว');
+  if (!/\d/.test(pw)) miss.push('ตัวเลข');
+  if (!/[a-z]/.test(pw)) miss.push('ตัวอักษรภาษาอังกฤษตัวเล็ก');
+  if (!/[A-Z]/.test(pw)) miss.push('ตัวอักษรภาษาอังกฤษตัวใหญ่');
+  if (!/[!-\/:-@\[-`{-~]/.test(pw)) miss.push('อักขระพิเศษ');
+  if (/[^!-~]/.test(pw)) miss.push('ห้ามมีช่องว่างหรืออักษรภาษาไทย');
+  if (miss.length || !PW_RULE.test(pw)) return 'รหัสผ่านยังไม่ครบเงื่อนไข: ' + miss.join(', ');
+  return '';
 }
 
 function getHome(token) {
@@ -1092,7 +1154,8 @@ function superGetAll(token) {
       discord: str_(u.Discord), rank: str_(u.Rank), createdAt: fmtDate_(u.CreatedAt),
       level: rankLevel_(u.Rank), manageable: canManage_(sup.user, u.Rank),
       otpActive: otpActive, otpExpires: otpActive ? fmtDate_(u.OtpExpires) : '',
-      otpBy: str_(u.OtpBy), lastLogin: fmtDate_(u.LastLoginAt)
+      otpBy: str_(u.OtpBy), lastLogin: fmtDate_(u.LastLoginAt),
+      usesPassword: rankLevel_(u.Rank) >= 1, hasPassword: rankLevel_(u.Rank) >= 1 && hasOwnPassword_(u)
     };
   });
   const perms = ss_().getSheetByName(SH.PERMS)
@@ -1195,7 +1258,8 @@ function adminGenerateOtp(token, id, hours) {
     audit_(whoOf_(adm.user), 'สร้างรหัสผ่านครั้งเดียว', str_(row.EmployeeID), 'อายุ ' + hours + ' ชม.');
     let url = '';
     try { url = ScriptApp.getService().getUrl() || ''; } catch (e) {}
-    return { ok: true, id: str_(row.EmployeeID), name: str_(row.Name), otp: out.otp, expires: out.expires, hours: hours, url: url };
+    return { ok: true, id: str_(row.EmployeeID), name: str_(row.Name), otp: out.otp, expires: out.expires, hours: hours, url: url,
+             forManager: rankLevel_(row.Rank) >= 1 };
   } finally {
     lock.releaseLock();
   }
@@ -1624,6 +1688,7 @@ function homeData_(user) {
     history: historyFor_(user.EmployeeID, isAdmin_(user.Rank)),
     isAdmin: isAdmin_(user.Rank),
     isSuper: isSuper_(user.Rank),
+    ownPassword: isAdmin_(user.Rank),
     pending: isAdmin_(user.Rank) ? table_(SH.RESULTS).rows.filter(needsReview_).length : 0,
     applicantsWaiting: isAdmin_(user.Rank) ? applicants_().rows.filter(a => str_(a.Status) === APP_STATUS.PASS).length : 0,
     notices: noticesFor_(user.EmployeeID)
@@ -1792,9 +1857,9 @@ function setup() {
 
   make(SH.USERS,
     ['EmployeeID', 'Name', 'NameOC', 'AgeIC', 'Discord', 'Reason', 'Rank', 'CreatedAt',
-     'OtpHash', 'OtpExpires', 'OtpBy', 'OtpCreatedAt', 'LastLoginAt'], [
+     'PasswordHash', 'PasswordSetAt', 'OtpHash', 'OtpExpires', 'OtpBy', 'OtpCreatedAt', 'LastLoginAt'], [
     // เริ่มต้นมีแค่ผู้พัฒนา (DEV001) — ขอรหัสครั้งเดียวจากเมนู "ระบบสอบ" ในไฟล์ Google Sheet
-    ['DEV001', 'ผู้พัฒนาระบบ', '', '', '', '', SUPER_RANKS[0], new Date(), '', '', '', '', '']
+    ['DEV001', 'ผู้พัฒนาระบบ', '', '', '', '', SUPER_RANKS[0], new Date(), '', '', '', '', '', '', '']
   ]);
 
   const examsCreated = make(SH.EXAMS,
@@ -1863,14 +1928,16 @@ function setup() {
   if (!ut.rows.some(u => isSuper_(u.Rank)) && !ut.rows.some(u => norm_(u.EmployeeID) === 'DEV001')) {
     appendObj_(ut, { EmployeeID: 'DEV001', Name: 'ผู้พัฒนาระบบ', Rank: SUPER_RANKS[0], CreatedAt: new Date() });
   }
-  // เปลี่ยนจากรหัสผ่านถาวรเป็นรหัสครั้งเดียว: ล้าง hash รหัสผ่านเดิมทิ้ง (ครั้งเดียว)
-  if (!props.getProperty('MIGRATED_OTP')) {
+  // ยศทั่วไปเปลี่ยนเป็นรหัสครั้งเดียว: ล้างรหัสผ่านถาวรเดิมของคนที่ไม่ใช่ ADMIN/SUPER (ครั้งเดียว)
+  // ADMIN/SUPER ที่ตั้งรหัสไว้แล้ว (MustChange ≠ TRUE) ใช้รหัสเดิมต่อได้
+  if (!props.getProperty('MIGRATED_OTP2')) {
     const t2 = table_(SH.USERS);
     t2.rows.forEach(u => {
-      if (str_(u.PasswordHash) !== '') setCell_(t2, u, 'PasswordHash', '');
+      const keep = rankLevel_(u.Rank) >= 1 && hasOwnPassword_(u) && !truthy_(u.MustChange);
+      if (!keep && str_(u.PasswordHash) !== '') setCell_(t2, u, 'PasswordHash', '');
       if (str_(u.MustChange) !== '') setCell_(t2, u, 'MustChange', '');
     });
-    props.setProperty('MIGRATED_OTP', '1');
+    props.setProperty('MIGRATED_OTP2', '1');
   }
 
   make(SH.ANSWERS, ['Timestamp', 'ResultID', 'EmployeeID', 'Name', 'QuestionID', 'Question', 'Answer', 'MaxPoints', 'AutoScore', 'Matched', 'Score'], []);
