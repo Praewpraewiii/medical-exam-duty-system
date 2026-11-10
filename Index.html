@@ -295,14 +295,14 @@
   <!-- ผลสอบ -->
   <section class="view" id="view-result" hidden>
     <div class="card center">
+      <p class="sub" id="r-exam" style="margin:0"></p>
       <div class="big" id="r-score"></div>
-      <p class="sub" id="r-exam" hidden></p>
-      <p id="r-pct" hidden></p>
-      <h2 id="r-verdict" hidden></h2>
-      <p id="r-note" class="sub" hidden></p>
+      <p id="r-pct" style="margin:0 0 10px;color:var(--muted)"></p>
+      <h2 id="r-verdict"></h2>
+      <p id="r-note" class="sub"></p>
       <p id="r-live" hidden><span class="live">ระบบจะแสดงผลทันทีเมื่อผู้บริหารตรวจ/ยืนยันคะแนน</span></p>
-      <div id="r-code" hidden></div>
-      <button class="btn" id="b-back" onclick="backHome()" hidden>กลับหน้าหลัก</button>
+      <div id="r-code"></div>
+      <button class="btn" id="b-back" onclick="backHome()">กลับหน้าหลัก</button>
     </div>
   </section>
   <!-- ผู้บริหาร: คลังข้อสอบ -->
@@ -684,6 +684,7 @@
           <button type="button" class="btn ghost" onclick="openSuper('exams', true)">ยกเลิก</button>
           <button class="btn" id="b-esave">บันทึก</button>
         </div>
+        <button type="button" class="btn danger block" id="b-edel" style="margin-top:10px" hidden>ลบชุดข้อสอบนี้</button>
       </form>
       <div id="m-eedit"></div>
     </div>
@@ -1573,7 +1574,11 @@ function openEEdit(rank){
   SUP.editExam = x ? x.rank : null;
   $('f-eedit').reset();
   $('ee-title').textContent = x ? 'แก้ไขชุดข้อสอบ' : 'เพิ่มชุดข้อสอบ';
-  $('ee-rank').value = x ? x.rank : ''; $('ee-rank').readOnly = !!x;
+  // ชุดของผู้สมัครผูกกับหน้าสมัคร — ห้ามเปลี่ยนยศ/ลบ (ชุดอื่นแก้ยศและลบได้)
+  const isApp = !!x && x.rank === SUP.data.applicantRank;
+  $('ee-rank').value = x ? x.rank : ''; $('ee-rank').readOnly = isApp;
+  $('ee-rank').title = isApp ? 'ชุดข้อสอบของผู้สมัคร เปลี่ยนยศไม่ได้' : '';
+  $('b-edel').hidden = !x || isApp;
   $('ee-name').value = x ? x.name : '';
   $('ee-c').value = x ? x.numChoice : 10;
   $('ee-w').value = x ? x.numWritten : 0;
@@ -1590,7 +1595,10 @@ function openEEdit(rank){
 $('f-eedit').addEventListener('submit', async e => {
   e.preventDefault(); msg('m-eedit','');
   const isNew = !SUP.editExam;
-  const data = { isNew, rank: $('ee-rank').value, name: $('ee-name').value, numChoice: $('ee-c').value,
+  const newRank = $('ee-rank').value.trim();
+  if (!isNew && newRank.toUpperCase() !== SUP.editExam.toUpperCase() &&
+      !confirm('เปลี่ยนยศของชุดข้อสอบจาก "' + SUP.editExam + '" เป็น "' + newRank + '"?\nข้อสอบในคลังและผลสอบเดิมของชุดนี้จะย้ายไปยศใหม่ด้วย')) return;
+  const data = { isNew, oldRank: SUP.editExam, rank: $('ee-rank').value, name: $('ee-name').value, numChoice: $('ee-c').value,
                  numWritten: $('ee-w').value, pass: $('ee-pass').value, next: $('ee-next').value, auto: $('ee-auto').checked,
                  time: $('ee-time').value, showScore: $('ee-show').checked, sendDiscord: $('ee-discord').checked };
   const b = $('b-esave'); busy(b, true, 'กำลังบันทึก…');
@@ -1601,6 +1609,21 @@ $('f-eedit').addEventListener('submit', async e => {
     await loadSuper(); ADM.sets = []; show('exams'); renderExams();
     msg('m-exams', (isNew ? 'เพิ่ม' : 'บันทึก') + 'ชุดข้อสอบ "' + data.name.trim() + '" แล้ว' +
       (isNew ? ' — เพิ่มข้อสอบเข้าชุดนี้ได้ที่เมนู "+ เพิ่มข้อสอบ"' : ''), 'ok');
+  } catch(err){ msg('m-eedit', err.message || err); }
+  finally { busy(b, false); }
+});
+
+$('b-edel').addEventListener('click', async () => {
+  const rank = SUP.editExam; if (!rank) return;
+  const x = SUP.data.exams.find(e => e.rank === rank);
+  if (!confirm('ลบชุดข้อสอบ "' + (x ? x.name : rank) + '" ของยศ ' + rank + '?\nข้อสอบในคลังยังเก็บไว้ ถ้าสร้างชุดของยศนี้ใหม่จะกลับมาใช้ได้')) return;
+  const b = $('b-edel'); busy(b, true, 'กำลังลบ…');
+  try {
+    const r = await call('superDeleteExam', S.token, rank);
+    if (expired(r)) return;
+    if (!r.ok) return msg('m-eedit', r.message);
+    await loadSuper(); ADM.sets = []; show('exams'); renderExams();
+    msg('m-exams', 'ลบชุดข้อสอบของยศ "' + rank + '" แล้ว', 'ok');
   } catch(err){ msg('m-eedit', err.message || err); }
   finally { busy(b, false); }
 });

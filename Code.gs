@@ -1183,7 +1183,7 @@ function superGetAll(token) {
 
   const hook = discordWebhook_();
   const discord = { configured: !!hook, masked: hook && sup.level >= 2 ? hook.replace(/\/[\w-]+$/, '/••••••' + hook.slice(-4)) : '' };
-  return { ok: true, me: str_(sup.user.EmployeeID), myLevel: sup.level, myRank: str_(sup.user.Rank),
+  return { ok: true, me: str_(sup.user.EmployeeID), myLevel: sup.level, applicantRank: APPLICANT_RANK, myRank: str_(sup.user.Rank),
            users, perms, exams, discord, superRanks: SUPER_RANKS, otpHours: OTP_HOURS, defaultOtpHours: DEFAULT_OTP_HOURS,
            ranks: Array.from(ranks).filter(r => sup.level >= 2 || !isSuper_(r)) };
 }
@@ -1422,17 +1422,31 @@ function superSaveExam(token, e) {
   const data = { ExamName: safe_(name), NumQuestions: numC === '' ? '' : Number(numC), NumWritten: numW === '' ? '' : Number(numW),
                  PassPercent: pass, TimeLimitMin: time, NextRank: next, AutoPromote: !!e.auto, ShowScore: !!e.showScore,
                  SendDiscord: !!e.sendDiscord };
+  if (isSuper_(rank)) return { ok: false, message: 'ยศผู้พัฒนาไม่ต้องมีชุดข้อสอบ' };
+  const oldRank = e.isNew ? rank : String(e.oldRank || rank).trim();
+  const renamed = !e.isNew && norm_(oldRank) !== norm_(rank);
+  if (renamed && (norm_(oldRank) === norm_(APPLICANT_RANK) || norm_(rank) === norm_(APPLICANT_RANK))) {
+    return { ok: false, message: 'ชุดข้อสอบของผู้สมัคร (ยศ "' + APPLICANT_RANK + '") เปลี่ยนยศไม่ได้ — ระบบสมัครใช้ชุดนี้อยู่' };
+  }
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
     const t = table_(SH.EXAMS);
-    const row = t.rows.find(r => norm_(r.Rank) === norm_(rank));
+    const row = t.rows.find(r => norm_(r.Rank) === norm_(oldRank));
     if (e.isNew) {
       if (row) return { ok: false, message: 'ยศ "' + rank + '" มีชุดข้อสอบอยู่แล้ว' };
       appendObj_(t, Object.assign({ Rank: rank }, data));
       audit_(whoOf_(sup.user), 'เพิ่มชุดข้อสอบ', rank, name);
     } else {
-      if (!row) return { ok: false, message: 'ไม่พบชุดข้อสอบของยศ "' + rank + '"' };
+      if (!row) return { ok: false, message: 'ไม่พบชุดข้อสอบของยศ "' + oldRank + '"' };
+      if (renamed) {
+        if (t.rows.some(r => r !== row && norm_(r.Rank) === norm_(rank))) return { ok: false, message: 'ยศ "' + rank + '" มีชุดข้อสอบอยู่แล้ว' };
+        setCell_(t, row, 'Rank', rank);
+        // ย้ายข้อสอบในคลังและผลสอบเดิมตามไปยังยศใหม่ (เกณฑ์ผ่าน/การแสดงคะแนนจะได้ยังถูกต้อง)
+        const nq = renameInColumn_(SH.QUESTIONS, 'ExamRank', oldRank, rank);
+        const nr = renameInColumn_(SH.RESULTS, 'Rank', oldRank, rank);
+        audit_(whoOf_(sup.user), 'เปลี่ยนยศของชุดข้อสอบ', rank, oldRank + ' → ' + rank + ' · ย้ายข้อสอบ ' + nq + ' ข้อ · ผลสอบ ' + nr + ' รายการ');
+      }
       Object.keys(data).forEach(k => setCell_(t, row, k, data[k]));
       audit_(whoOf_(sup.user), 'แก้ไขชุดข้อสอบ', rank, name + ' · ช้อย ' + (numC || 'ทั้งหมด') + ' · เขียน ' + (numW || 'ทั้งหมด') +
         ' · ผ่าน ' + pass + '% · ' + time + ' นาที · ' + (e.showScore ? 'แสดงคะแนน' : 'ซ่อนคะแนน'));
@@ -1443,6 +1457,40 @@ function superSaveExam(token, e) {
   }
 }
 
+
+/** ลบชุดข้อสอบ — ข้อสอบในคลังยังเก็บไว้ (สร้างชุดของยศเดิมใหม่ ข้อสอบจะกลับมาใช้ได้) */
+function superDeleteExam(token, rank) {
+  const sup = requireAdmin_(token);
+  if (sup.err) return sup.err;
+  rank = String(rank || '').trim();
+  if (norm_(rank) === norm_(APPLICANT_RANK)) return { ok: false, message: 'ลบชุดข้อสอบของผู้สมัครไม่ได้ — ระบบสมัครใช้ชุดนี้อยู่' };
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const t = table_(SH.EXAMS);
+    const row = t.rows.find(r => norm_(r.Rank) === norm_(rank));
+    if (!row) return { ok: false, message: 'ไม่พบชุดข้อสอบของยศ "' + rank + '"' };
+    t.sh.deleteRow(row._row);
+    audit_(whoOf_(sup.user), 'ลบชุดข้อสอบ', rank, str_(row.ExamName));
+    return { ok: true };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** เปลี่ยนค่าในคอลัมน์หนึ่งจาก from เป็น to ทั้งชีต (เขียนครั้งเดียว) — คืนจำนวนแถวที่เปลี่ยน */
+function renameInColumn_(sheet, header, from, to) {
+  const sh = ss_().getSheetByName(sheet);
+  if (!sh || sh.getLastRow() < 2) return 0;
+  const col = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(h => String(h).trim()).indexOf(header) + 1;
+  if (!col) return 0;
+  const rng = sh.getRange(2, col, sh.getLastRow() - 1, 1);
+  const vals = rng.getValues();
+  let n = 0;
+  vals.forEach(v => { if (norm_(v[0]) === norm_(from)) { v[0] = to; n++; } });
+  if (n) rng.setValues(vals);
+  return n;
+}
 
 /* ---------- ผู้สมัคร (ชีต Applicants แยกจาก Users) ---------- */
 
