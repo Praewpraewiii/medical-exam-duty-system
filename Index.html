@@ -160,6 +160,8 @@
         <label for="pw">รหัสผ่าน</label>
         <input type="password" id="pw" autocomplete="current-password" placeholder="รหัสผ่าน หรือ รหัสครั้งเดียว เช่น ABCD-2345" autocapitalize="off" spellcheck="false" required>
         <label class="chk"><input type="checkbox" data-toggle="pw"> แสดงรหัสผ่าน</label>
+        <label class="chk" style="margin-bottom:2px"><input type="checkbox" id="remember"> จำรหัสผ่านในเครื่องนี้</label>
+        <p class="hint" style="margin:0 0 12px 28px">เฉพาะ ADMIN / ผู้พัฒนา · เข้าระบบอัตโนมัติ 30 วัน · อย่าติ๊กบนเครื่องสาธารณะ</p>
         <button class="btn block" id="b-login">เข้าสู่ระบบ</button>
       </form>
       <div id="m-login"></div>
@@ -272,7 +274,7 @@
     </div>
     <div class="row">
       <button class="btn ghost" id="b-mypw" onclick="openChange(false)" hidden>เปลี่ยนรหัสผ่าน</button>
-      <button class="btn ghost" onclick="logout()">ออกจากระบบ</button>
+      <button class="btn ghost" onclick="signOut()">ออกจากระบบ</button>
     </div>
   </section>
 
@@ -747,7 +749,7 @@ document.querySelectorAll('[data-toggle]').forEach(cb => cb.addEventListener('ch
 }));
 
 function expired(r){
-  if (r && r.expired) { logout(); msg('m-login', r.message); return true; }
+  if (r && r.expired) { logout(); msg('m-login', r.message); if (remGet()) tryResume(); return true; }
   return false;
 }
 
@@ -756,9 +758,11 @@ $('f-login').addEventListener('submit', async e => {
   e.preventDefault(); msg('m-login','');
   const b = $('b-login'); busy(b, true);
   try {
-    const r = await call('login', $('code').value, $('pw').value);
+    const r = await call('login', $('code').value, $('pw').value, $('remember').checked);
     if (!r.ok) return msg('m-login', r.message);
     try { localStorage.setItem('lastCode', $('code').value.trim()); } catch(_){}
+    if (r.remember) remSet(r.remember);
+    S.wantRemember = $('remember').checked;
     $('pw').value = '';
     S.token = r.token; S.regCode = null;
     if (r.mustChange) { S.tokenType = 'change'; $('who').textContent = r.name; openChange(true); }
@@ -831,9 +835,11 @@ $('f-change').addEventListener('submit', async e => {
   e.preventDefault(); msg('m-change','');
   const b = $('b-change'); busy(b, true, 'กำลังบันทึก…');
   try {
-    const r = await call('changePassword', S.token, $('c-new').value, $('c-cur').value);
+    const keep = !!(S.wantRemember || remGet());   // เปลี่ยนรหัสแล้วโทเคนเดิมใช้ไม่ได้ → ขอใหม่
+    const r = await call('changePassword', S.token, $('c-new').value, $('c-cur').value, keep);
     if (expired(r)) return;
     if (!r.ok) { busy(b, false); return msg('m-change', r.message); }
+    if (r.remember) remSet(r.remember); else if (keep) remClear();
     S.token = r.token; S.tokenType = 'auth'; S.data = r;
     const forced = S.forced; S.forced = false;
     renderHome();
@@ -882,6 +888,27 @@ function renderHome(){
   $('h-apps').innerHTML = S.data.applicantsWaiting ? '<span class="pill" title="สอบผ่าน รอรับเข้า">' + S.data.applicantsWaiting + '</span>' : '';
   ADM.from = 'home';
   show('home');
+}
+
+/* จำรหัสผ่าน: เก็บแค่โทเคนสุ่มจากเซิร์ฟเวอร์ ไม่เก็บรหัสผ่านจริง */
+const remGet = () => { try { return localStorage.getItem('remTok') || ''; } catch(_){ return ''; } };
+const remSet = t => { try { localStorage.setItem('remTok', t); } catch(_){} };
+const remClear = () => { try { localStorage.removeItem('remTok'); } catch(_){} };
+async function tryResume(){
+  const t = remGet(); if (!t || S.token) return false;
+  msg('m-login', 'กำลังเข้าสู่ระบบอัตโนมัติ…', 'ok');
+  try {
+    const r = await call('resumeLogin', t);
+    if (!r.ok) { remClear(); msg('m-login', r.message || ''); return false; }
+    msg('m-login', '');
+    S.token = r.token; S.tokenType = 'auth'; S.regCode = null; S.data = r; renderHome();
+    return true;
+  } catch(err){ msg('m-login', ''); return false; }
+}
+function signOut(){
+  const t = remGet(); remClear();
+  if (t) call('forgetLogin', t).catch(() => {});
+  logout();
 }
 
 function logout(){
@@ -2094,6 +2121,7 @@ $('f-accept').addEventListener('submit', async e => {
 
 window.addEventListener('beforeunload', e => { if (S.inExam) { e.preventDefault(); e.returnValue = ''; } });
 try { const c = localStorage.getItem('lastCode'); if (c) $('code').value = c; } catch(_){}
+tryResume();
 </script>
 </body>
 </html>

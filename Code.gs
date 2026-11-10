@@ -38,6 +38,7 @@ const PENDING = 'รอตรวจข้อเขียน';
 const REVIEW_AUTO = 'อัตโนมัติ (รอยืนยัน)';
 const REVIEW_DONE = 'ยืนยันแล้ว';
 const SESSION_SECONDS = 21600;
+const REMEMBER_DAYS = 30;          // "จำรหัสผ่าน" ของ ADMIN / ผู้พัฒนา: เข้าระบบอัตโนมัติจากเครื่องเดิมได้กี่วัน
 const MAX_FAILS = 5;
 const LOCK_SECONDS = 300;
 const MAX_ANSWER_CHARS = 3000;
@@ -69,7 +70,7 @@ function onOpen() {
 
 /* ---------- เข้าสู่ระบบ / รหัสผ่าน ---------- */
 
-function login(code, password) {
+function login(code, password, remember) {
   const c = norm_(code);
   password = String(password || '');
   if (!c || !password) return { ok: false, message: 'กรุณากรอกรหัสพนักงานและรหัสผ่าน' };
@@ -114,14 +115,68 @@ function login(code, password) {
   if (how === 'otp-reset') {
     return { ok: true, mustChange: true, token: issueToken_(c, 'change'), name: str_(user.Name) };
   }
-  return Object.assign({ ok: true, token: issueToken_(c, 'auth') }, homeData_(user));
+  const out = Object.assign({ ok: true, token: issueToken_(c, 'auth') }, homeData_(user));
+  if (remember && how === 'password') out.remember = issueRemember_(user);
+  return out;
+}
+
+/* ---------- จำรหัสผ่าน (เฉพาะ ADMIN / ผู้พัฒนา) ----------
+ * ไม่เก็บรหัสผ่านไว้ในเครื่อง — เก็บแค่โทเคนสุ่มที่ใช้เข้าได้ REMEMBER_DAYS วัน
+ * ใช้ไม่ได้ทันทีเมื่อ: เปลี่ยน/รีเซ็ตรหัสผ่าน · ถูกถอดสิทธิ์ ADMIN · ลบบัญชี · กดออกจากระบบ
+ */
+function remKey_(t) {
+  const b = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, 'rem|' + String(t), Utilities.Charset.UTF_8);
+  return 'rem_' + b.map(x => ('0' + (x & 0xff).toString(16)).slice(-2)).join('').slice(0, 40);
+}
+
+function issueRemember_(user) {
+  const props = PropertiesService.getScriptProperties();
+  const now = Date.now();
+  // ล้างโทเคนที่หมดอายุ
+  const all = props.getProperties();
+  Object.keys(all).forEach(k => {
+    if (k.indexOf('rem_') !== 0) return;
+    try { if (JSON.parse(all[k]).exp < now) props.deleteProperty(k); } catch (e) { props.deleteProperty(k); }
+  });
+  const t = Utilities.getUuid() + Utilities.getUuid();
+  props.setProperty(remKey_(t), JSON.stringify({
+    code: norm_(user.EmployeeID), exp: now + REMEMBER_DAYS * 86400000, ph: str_(user.PasswordHash).slice(-16)
+  }));
+  return t;
+}
+
+/** เข้าระบบอัตโนมัติด้วยโทเคน "จำรหัสผ่าน" */
+function resumeLogin(rememberToken) {
+  if (!rememberToken) return { ok: false };
+  const props = PropertiesService.getScriptProperties();
+  const key = remKey_(rememberToken);
+  const raw = props.getProperty(key);
+  if (!raw) return { ok: false, message: 'การจำรหัสผ่านหมดอายุ กรุณาเข้าสู่ระบบใหม่' };
+  let rec; try { rec = JSON.parse(raw); } catch (e) { rec = null; }
+  const user = rec ? findUser_(rec.code) : null;
+  const valid = rec && rec.exp > Date.now() && user && actorLevel_(user) >= 1 && hasOwnPassword_(user) &&
+    str_(user.PasswordHash).slice(-16) === rec.ph;
+  if (!valid) {
+    props.deleteProperty(key);
+    return { ok: false, message: 'การจำรหัสผ่านใช้ไม่ได้แล้ว (หมดอายุ เปลี่ยนรหัสผ่าน หรือสิทธิ์เปลี่ยน) กรุณาเข้าสู่ระบบใหม่' };
+  }
+  const users = table_(SH.USERS);
+  const row = users.rows.find(r => norm_(r.EmployeeID) === rec.code);
+  if (row) setCell_(users, row, 'LastLoginAt', new Date());
+  return Object.assign({ ok: true, token: issueToken_(rec.code, 'auth') }, homeData_(user));
+}
+
+/** ออกจากระบบ: ยกเลิกการจำรหัสผ่านของเครื่องนี้ */
+function forgetLogin(rememberToken) {
+  if (rememberToken) PropertiesService.getScriptProperties().deleteProperty(remKey_(rememberToken));
+  return { ok: true };
 }
 
 /**
  * ตั้ง/เปลี่ยนรหัสผ่านของตัวเอง — เฉพาะ ADMIN / SUPER
  * token ชนิด change (เพิ่งเข้าด้วยรหัสครั้งเดียว) ไม่ต้องกรอกรหัสเดิม · token ชนิด auth ต้องกรอกรหัสปัจจุบัน
  */
-function changePassword(token, newPassword, currentPassword) {
+function changePassword(token, newPassword, currentPassword, remember) {
   const tok = readToken_(token, ['auth', 'change']);
   if (!tok) return { ok: false, expired: true, message: 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่' };
   const lock = LockService.getScriptLock();
@@ -147,7 +202,9 @@ function changePassword(token, newPassword, currentPassword) {
   }
   CacheService.getScriptCache().remove('tok_' + token);
   audit_(whoOf_(user), tok.type === 'change' ? 'ตั้งรหัสผ่านใหม่ (หลังรหัสครั้งเดียว)' : 'เปลี่ยนรหัสผ่าน', str_(user.EmployeeID), '');
-  return Object.assign({ ok: true, token: issueToken_(tok.code, 'auth') }, homeData_(user));
+  const out = Object.assign({ ok: true, token: issueToken_(tok.code, 'auth') }, homeData_(user));
+  if (remember) out.remember = issueRemember_(user);
+  return out;
 }
 
 function hasOwnPassword_(user) { return /^sha256\$/.test(str_(user.PasswordHash).trim()); }
@@ -526,9 +583,12 @@ function finalize_(res, users, r, writtenScore, grader) {
 
 function rankKey_(v) { return String(v == null ? '' : v).replace(/[\s.]/g, ''); }
 
+let ADMIN_RANKS_CACHE_ = null; // อ่านชีต Permissions ครั้งเดียวต่อการเรียก (เดิมอ่านซ้ำทุกครั้งที่เช็กสิทธิ์ → ช้ามาก)
 function adminRanks_() {
-  if (!ss_().getSheetByName(SH.PERMS)) return ADMIN_RANKS.map(rankKey_);
-  return table_(SH.PERMS).rows.filter(r => norm_(r.Level) === 'ADMIN').map(r => rankKey_(r.Rank));
+  if (ADMIN_RANKS_CACHE_) return ADMIN_RANKS_CACHE_;
+  ADMIN_RANKS_CACHE_ = !ss_().getSheetByName(SH.PERMS) ? ADMIN_RANKS.map(rankKey_)
+    : table_(SH.PERMS).rows.filter(r => norm_(r.Level) === 'ADMIN').map(r => rankKey_(r.Rank));
+  return ADMIN_RANKS_CACHE_;
 }
 
 /** 2 = SUPER, 1 = ADMIN, 0 = ผู้ใช้ทั่วไป */
@@ -592,6 +652,10 @@ function ensureQuestionIds_() {
   }
   const n = sh.getLastRow() - 1;
   if (n < 1) return 0;
+  // เช็กเร็วก่อน (ไม่ล็อก) — ส่วนใหญ่ไม่มีอะไรต้องแก้
+  const quick = sh.getRange(2, col, n, 1).getValues().map(r => String(r[0] == null ? '' : r[0]).trim().toUpperCase());
+  const qs = new Set(quick.filter(v => v));
+  if (quick.every(v => v && v !== 'UNDEFINED' && v !== 'NULL') && qs.size === quick.length) return 0;
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
@@ -1399,6 +1463,7 @@ function superSetPerm(token, rank, level) {
       if (row) t.sh.deleteRow(row._row);
       audit_(who, 'ถอนสิทธิ์ผู้บริหาร', rank, '');
     }
+    ADMIN_RANKS_CACHE_ = null;
     return { ok: true };
   } finally {
     lock.releaseLock();
