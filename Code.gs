@@ -233,6 +233,7 @@ function startExam(token) {
   const exam = findExam_(user.Rank);
   if (!exam) return { ok: false, message: 'ยศ "' + user.Rank + '" ยังไม่มีข้อสอบ' };
 
+  ensureQuestionIds_();
   const pool = questionsFor_(user.Rank);
   const choicePool = pool.filter(q => qType_(q) === 'CHOICE');
   const writtenPool = pool.filter(q => qType_(q) === 'WRITTEN');
@@ -574,9 +575,51 @@ function rankLevel_(rank) { return isSuper_(rank) ? 2 : isAdmin_(rank) ? 1 : 0; 
 /** ADMIN จัดการได้เฉพาะบัญชีที่ไม่ใช่ผู้พัฒนา · SUPER จัดการได้ทุกบัญชี */
 function canManage_(actor, targetRank) { return actorLevel_(actor) >= 2 || rankLevel_(targetRank) < 2; }
 
+/**
+ * ทุกข้อในชีต Questions ต้องมีรหัส (ID) ไม่ซ้ำกัน — ระบบใช้รหัสจับคู่คำตอบกับข้อสอบ
+ * ข้อที่พิมพ์เพิ่มในชีตเองแล้วเว้น ID ว่าง/ซ้ำ หรือหัวคอลัมน์ไม่ใช่ "ID" → เติมให้อัตโนมัติ (Q###)
+ */
+function ensureQuestionIds_() {
+  const sh = ss_().getSheetByName(SH.QUESTIONS);
+  if (!sh || sh.getLastRow() < 1) return 0;
+  const lastCol = Math.max(sh.getLastColumn(), 1);
+  const head = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h).trim());
+  let col = head.indexOf('ID') + 1;
+  if (!col) {
+    const alias = head.findIndex(h => /^(id|qid|questionid|question id|รหัส|รหัสข้อ|รหัสข้อสอบ)$/i.test(h));
+    if (alias >= 0) { col = alias + 1; sh.getRange(1, col).setValue('ID'); }
+    else { col = lastCol + 1; sh.getRange(1, col).setValue('ID').setFontWeight('bold').setBackground('#d9f2ef'); }
+  }
+  const n = sh.getLastRow() - 1;
+  if (n < 1) return 0;
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const all = sh.getRange(2, 1, n, Math.max(sh.getLastColumn(), col)).getValues();
+    const ids = all.map(r => String(r[col - 1] == null ? '' : r[col - 1]).trim());
+    let max = ids.reduce((m, v) => { const x = /^Q(\d+)$/i.exec(v); return x ? Math.max(m, Number(x[1])) : m; }, 0);
+    const seen = new Set(); let fixed = 0;
+    ids.forEach((v, i) => {
+      const empty = all[i].every(c => String(c).trim() === '');
+      if (empty) return;
+      const bad = !v || /^(undefined|null)$/i.test(v) || seen.has(v.toUpperCase());
+      if (bad) { v = 'Q' + String(++max).padStart(3, '0'); ids[i] = v; fixed++; }
+      seen.add(v.toUpperCase());
+    });
+    if (fixed) {
+      sh.getRange(2, col, n, 1).setValues(ids.map(v => [v]));
+      audit_('ระบบ', 'เติมรหัสข้อสอบที่ว่าง/ซ้ำ', SH.QUESTIONS, fixed + ' ข้อ');
+    }
+    return fixed;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function adminGetQuestions(token) {
   const adm = requireAdmin_(token);
   if (adm.err) return adm.err;
+  ensureQuestionIds_();
   return {
     ok: true,
     sets: table_(SH.EXAMS).rows.map(e => ({ rank: str_(e.Rank), name: str_(e.ExamName) })),
