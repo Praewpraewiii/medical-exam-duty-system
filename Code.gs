@@ -526,9 +526,12 @@ function finalize_(res, users, r, writtenScore, grader) {
 
 function rankKey_(v) { return String(v == null ? '' : v).replace(/[\s.]/g, ''); }
 
+let ADMIN_RANKS_CACHE_ = null; // อ่านชีต Permissions ครั้งเดียวต่อการเรียก (เดิมอ่านซ้ำทุกครั้งที่เช็กสิทธิ์ → ช้ามาก)
 function adminRanks_() {
-  if (!ss_().getSheetByName(SH.PERMS)) return ADMIN_RANKS.map(rankKey_);
-  return table_(SH.PERMS).rows.filter(r => norm_(r.Level) === 'ADMIN').map(r => rankKey_(r.Rank));
+  if (ADMIN_RANKS_CACHE_) return ADMIN_RANKS_CACHE_;
+  ADMIN_RANKS_CACHE_ = !ss_().getSheetByName(SH.PERMS) ? ADMIN_RANKS.map(rankKey_)
+    : table_(SH.PERMS).rows.filter(r => norm_(r.Level) === 'ADMIN').map(r => rankKey_(r.Rank));
+  return ADMIN_RANKS_CACHE_;
 }
 
 /** 2 = SUPER, 1 = ADMIN, 0 = ผู้ใช้ทั่วไป */
@@ -592,6 +595,10 @@ function ensureQuestionIds_() {
   }
   const n = sh.getLastRow() - 1;
   if (n < 1) return 0;
+  // เช็กเร็วก่อน (ไม่ล็อก) — ส่วนใหญ่ไม่มีอะไรต้องแก้
+  const quick = sh.getRange(2, col, n, 1).getValues().map(r => String(r[0] == null ? '' : r[0]).trim().toUpperCase());
+  const qs = new Set(quick.filter(v => v));
+  if (quick.every(v => v && v !== 'UNDEFINED' && v !== 'NULL') && qs.size === quick.length) return 0;
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
@@ -1399,6 +1406,7 @@ function superSetPerm(token, rank, level) {
       if (row) t.sh.deleteRow(row._row);
       audit_(who, 'ถอนสิทธิ์ผู้บริหาร', rank, '');
     }
+    ADMIN_RANKS_CACHE_ = null;
     return { ok: true };
   } finally {
     lock.releaseLock();
